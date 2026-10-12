@@ -11,8 +11,8 @@ export function databaseRuntime() {
 export async function bindings(runtime: Miniflare): Promise<Bindings> {
   return { DB: await runtime.getD1Database('DB'), ASSETS: { fetch: async () => new Response('App') } } as unknown as Bindings;
 }
-export async function migrate(db: D1Database) {
-  for (const file of ['0001_app_metadata.sql', '0002_projects_and_timer.sql']) {
+export async function migrate(db: D1Database, files = ['0001_app_metadata.sql', '0002_projects_and_timer.sql', '0003_pomodoro.sql']) {
+  for (const file of files) {
     const sql = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
     const statements: string[] = [];
     let current = ''; let trigger = false;

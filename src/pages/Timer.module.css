@@ -7,3 +7,10 @@
 .details dd { margin: 4px 0; font-variant-numeric: tabular-nums; }
 .actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
 .note { color: #52645e; font-size: 0.9rem; }
+
+.settings { margin-top: 24px; background: white; border: 1px solid #dce4da; padding: 20px; border-radius: 12px; }
+.settings summary { cursor: pointer; min-height: 32px; }
+.settings fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; border: 0; padding: 16px 0; }
+.settings legend { padding-top: 16px; }
+.settings p { font-size: 0.9rem; }
+@media (max-width: 420px) { .settings fieldset { grid-template-columns: minmax(0, 1fr); } }

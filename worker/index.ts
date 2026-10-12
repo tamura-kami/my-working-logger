@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { Bindings } from './env';
 import { ApiError } from './http';
 import projects from './projects';
-import timer from './timer';
+import timer, { resolveExpired } from './timer';
 export type { Bindings } from './env';
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -15,6 +15,7 @@ app.use('/api/*', async (c, next) => {
       return c.json({ error: '別のサイトからの操作は受け付けられません。' }, 403);
     }
   }
+  if (c.req.path !== '/api/health') await resolveExpired(c.env.DB);
   await next();
 });
 app.onError((error, c) => {
@@ -32,7 +33,8 @@ app.get('/api/health', async (c) => {
     const row = await c.env.DB.prepare(
       'SELECT version FROM app_metadata WHERE id = 1',
     ).first<{ version: number }>();
-    if (row?.version !== 2) return c.json({ status: 'error', database: 'unavailable' }, 503);
+    if (row?.version !== 3) return c.json({ status: 'error', database: 'unavailable' }, 503);
+    await resolveExpired(c.env.DB);
     return c.json({ status: 'ok', database: 'ok' });
   } catch {
     return c.json({ status: 'error', database: 'unavailable' }, 503);
