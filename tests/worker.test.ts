@@ -1,8 +1,7 @@
-import { URL } from 'node:url';
-import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import app, { type Bindings } from '../worker/index';
+import { migrate } from './database';
 
 const runtime = new Miniflare(convertV4MiniflareOptions({
   modules: true,
@@ -25,11 +24,8 @@ describe('Worker と D1', () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ status: 'error', database: 'unavailable' });
   });
-  it('初期マイグレーションを適用すると health が成功する', async () => {
-    const sql = await readFile(new URL('../migrations/0001_app_metadata.sql', import.meta.url), 'utf8');
-    // D1 exec は行ごとの SQL を扱うため、ステートメントを prepare/batch で適用。
-    const statements = sql.replace(/--[^\n]*/g, '').split(';').filter((s) => s.trim());
-    await env.DB.batch(statements.map((s) => env.DB.prepare(s)));
+  it('マイグレーションを適用すると health が成功する', async () => {
+    await migrate(env.DB);
     const response = await app.request('/api/health', {}, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'ok', database: 'ok' });
