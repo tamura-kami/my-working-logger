@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useState, type ReactNode } from 'react';
 import { NavLink, Route, Routes } from 'react-router-dom';
 import styles from './App.module.css';
 
@@ -18,17 +18,18 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
 }
 
 export default function App() {
-  return <div className={styles.shell}>
-    <header className={styles.brand}>My Working Logger<span>日々の作業を記録する</span></header>
+  const [timerActive, setTimerActive] = useState(false);
+  return <div className={timerActive ? styles.timerShell : styles.shell}>
+    {!timerActive && <><header className={styles.brand}>My Working Logger<span>日々の作業を記録する</span></header>
     <nav className={styles.nav} aria-label="メインナビゲーション">
       <NavLink to="/" end>タイマー</NavLink>
       <NavLink to="/summary">実績・サマリ</NavLink>
       <NavLink to="/projects">作業管理</NavLink>
-    </nav>
-    <main className={styles.main}>
+    </nav></>}
+    <main className={timerActive ? styles.timerMain : styles.main}>
       <PageErrorBoundary><Suspense fallback={<p role="status">読み込み中…</p>}>
         <Routes>
-          <Route path="/" element={<Timer />} />
+          <Route path="/" element={<Timer onActiveChange={setTimerActive} />} />
           <Route path="/summary" element={<Summary />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="*" element={<><h1>画面が見つかりません</h1><NavLink to="/">タイマーへ</NavLink></>} />

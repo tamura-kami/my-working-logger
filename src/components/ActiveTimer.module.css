@@ -1,0 +1,16 @@
+.screen { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; color: #fff; overflow: auto; padding: 24px; padding-top: max(24px, env(safe-area-inset-top)); }
+.time { margin: 0; color: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-weight: 500; line-height: 1; font-size: clamp(3rem, min(22vw, 35vh), 14rem); letter-spacing: -0.04em; white-space: nowrap; }
+.hours { font-size: clamp(2.5rem, min(14vw, 32vh), 11rem); }
+.time:focus { outline: none; }
+.controls { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: clamp(8px, 3vw, 32px); padding: 0 16px; }
+.controls button { display: grid; place-items: center; width: clamp(48px, 12vw, 64px); height: clamp(48px, 12vw, 64px); padding: 12px; border: 1px solid transparent; border-radius: 50%; background: transparent; color: #fff; touch-action: manipulation; }
+.controls svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.controls button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.controls button:focus { outline: 3px solid #fff; outline-offset: 3px; }
+.controls button:disabled { opacity: 0.4; }
+.controls .secondary { opacity: 0.75; }
+.srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-height: 400px) {
+  .controls { bottom: max(8px, env(safe-area-inset-bottom)); }
+  .controls button { width: 48px; height: 48px; padding: 10px; }
+}

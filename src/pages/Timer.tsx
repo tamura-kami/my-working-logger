@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PomodoroSettings, Project, TimerCommand, TimerResult, TimerSnapshot } from '../../shared/contracts';
 import { cycleDurations, formatDuration, remainingTime } from '../../shared/timing';
@@ -7,6 +7,7 @@ import { defaultPomodoro, validPomodoro } from '../../shared/pomodoro';
 import { loadPomodoro, savePomodoro, loadTimerMode, saveTimerMode } from '../pomodoroSettings';
 import { TimerSound } from '../timerSound';
 import styles from './Timer.module.css';
+import ActiveTimer from '../components/ActiveTimer';
 
 const notificationKey = 'my-working-logger.timer-updated';
 const pendingKey = 'my-working-logger.pending-timer-command';
@@ -18,7 +19,7 @@ function readPending(): TimerCommand | null {
   } catch { /* Storage 無効時も、その画面内では再送可能。 */ }
   return null;
 }
-export default function Timer() {
+export default function Timer({ onActiveChange }: { onActiveChange?: (active: boolean) => void }) {
   const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState('');
@@ -148,7 +149,6 @@ export default function Timer() {
   const remaining = timer ? remainingTime(timer, now) : null;
   const effectiveMode = !timer || timer.status === 'idle' ? mode : timer.mode;
   const activeSettings = timer?.mode === 'pomodoro' ? timer.pomodoro! : settings;
-  const phaseName = timer?.phase === 'short_break' ? '短い休憩' : timer?.phase === 'long_break' ? '長い休憩' : '集中';
   const expirationCheck = useRef<string | null>(null);
   useEffect(() => {
     if (timer?.mode === 'pomodoro' && timer.status === 'running' && remaining === 0 && !busy) {
@@ -158,14 +158,22 @@ export default function Timer() {
   }, [timer, remaining, busy, refresh, tick, ring]);
   const primaryTime = effectiveMode === 'pomodoro' ? remaining ?? settings.focus_minutes * 60000 : time.active;
   const controlsDisabled = busy || !!pending;
+  const active = !!timer && timer.status !== 'idle';
+  useLayoutEffect(() => {
+    onActiveChange?.(active);
+    return () => onActiveChange?.(false);
+  }, [active, onActiveChange]);
   void tick;
+  if (active) return <ActiveTimer timer={timer} milliseconds={primaryTime} disabled={controlsDisabled}
+    busy={busy} error={error} pending={!!pending} onAction={act} onRefresh={() => void refresh()}
+    onRetry={() => { if (pending) void send(pending); }} />;
   return <section aria-labelledby="timer-heading">
     <h1 id="timer-heading">タイマー</h1><p>今日の作業を記録します。</p>
     {!timer ? <p role="status">読み込み中…</p> : <>
-      {timer.status === 'idle' ? <label className={styles.select}>作業<select value={selected} disabled={busy || !!pending || !projects.length} onChange={(e) => chooseProject(e.target.value)}>
+      <label className={styles.select}>作業<select value={selected} disabled={busy || !!pending || !projects.length} onChange={(e) => chooseProject(e.target.value)}>
         {!projects.length && <option value="">作業がありません</option>}
         {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-      </select></label> : <p className={styles.project} style={{ borderLeftColor: timer.color ?? '#175c50' }}>{timer.project_name}<br /><small>作業の変更はタイマー終了後にできます。</small></p>}
+      </select></label>
       {timer.status === 'idle' && <fieldset className={styles.modePicker} disabled={controlsDisabled || !selected}>
         <legend>タイマー方式</legend>
         <div className={styles.modeOptions}>
@@ -187,19 +195,8 @@ export default function Timer() {
         </div>
       </fieldset>}
       <div className={styles.panel}>
-        <p className={styles.status}>{timer.status === 'waiting' ? `${phaseName}の開始待ち` : timer.status === 'paused' ? '一時停止中' : timer.status === 'running' ? (effectiveMode === 'pomodoro' ? `${phaseName}中` : '計測中') : '未開始'}</p>
-        <p>{effectiveMode === 'pomodoro' ? `${phaseName}の残り時間` : '実作業時間'}</p><p className={styles.time}>{formatDuration(effectiveMode === 'pomodoro' ? Math.ceil((Number.isFinite(primaryTime) ? primaryTime : 0) / 1000) * 1000 : primaryTime)}</p>
-        {timer.mode === 'pomodoro' && <p>集中完了 {timer.completed_focus} 回 · {activeSettings.long_break_every} 回ごとに長い休憩</p>}
-        <dl className={styles.details}><div><dt>経過時間</dt><dd>{formatDuration(time.elapsed)}</dd></div><div><dt>{effectiveMode === 'pomodoro' ? '休止時間合計' : '一時停止合計'}</dt><dd>{formatDuration(time.paused)}</dd></div></dl>
-        <div className={styles.actions}>
-          {timer.status === 'idle' ? <button disabled={controlsDisabled || !selected || (mode === 'pomodoro' && !validPomodoro(settings))} onClick={() => act('start')}>開始</button> : <>
-            {timer.status === 'waiting'
-              ? <button disabled={controlsDisabled} onClick={() => act(timer.phase === 'focus' ? 'start_focus' : 'start_break')}>{timer.phase === 'focus' ? '次の集中を開始' : `${phaseName}を開始`}</button>
-              : <button disabled={controlsDisabled} onClick={() => act(timer.status === 'running' ? 'pause' : 'resume')}>{timer.status === 'running' ? '一時停止' : '再開'}</button>}
-            {timer.mode === 'pomodoro' && timer.phase !== 'focus' && <button disabled={controlsDisabled} onClick={() => act('skip')}>休憩をスキップ</button>}
-            <button disabled={controlsDisabled} onClick={() => act('finish')}>{timer.mode === 'pomodoro' ? 'ポモドーロを終了' : '終了して保存'}</button>
-          </>}
-        </div>
+        <p className={styles.time}>{formatDuration(effectiveMode === 'pomodoro' ? settings.focus_minutes * 60000 : 0)}</p>
+        <button disabled={controlsDisabled || !selected || (mode === 'pomodoro' && !validPomodoro(settings))} onClick={() => act('start')}>開始</button>
       </div>
       {effectiveMode === 'pomodoro' && <details className={styles.settings} open={timer.status === 'idle'}>
         <summary>ポモドーロ設定{timer.status !== 'idle' && '（開始時の設定）'}</summary>

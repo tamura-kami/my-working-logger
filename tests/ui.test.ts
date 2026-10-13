@@ -21,14 +21,14 @@ describe('タイマー画面', () => {
     let snapshot: TimerSnapshot = { ...active, server_now: 1800000010000, timer: { ...active.timer, status: 'paused', changed_at: 1800000005000 } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? snapshot : { projects: [project] }));
     const view = mountTimer();
-    await screen.findByText('一時停止中');
+    await screen.findByRole('button', { name: '再開' });
     expect(screen.getByText('00:00:05', { selector: 'p' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '再開' })).toBeTruthy();
     view.unmount(); mountTimer();
-    await screen.findByText('一時停止中');
+    await screen.findByRole('button', { name: '再開' });
     snapshot = active;
     await act(async () => { window.dispatchEvent(new Event('pageshow')); });
-    await screen.findByText('計測中');
+    await screen.findByRole('button', { name: '一時停止' });
     expect(screen.getByRole('button', { name: '一時停止' })).toBeTruthy();
   });
   it('一時停止の通信待ちでは再送案内を表示せず、正常完了後も表示しない', async () => {
@@ -46,17 +46,17 @@ describe('タイマー画面', () => {
     expect(screen.queryByRole('button', { name: '送信結果を確認・再送' })).toBeNull();
     current = { ...active, timer: { ...active.timer, revision: 2, status: 'paused', changed_at: active.server_now } };
     await act(async () => { resolvePause(json({ ...current, outcome: { action: 'pause', session_id: null, discarded: false } })); });
-    await screen.findByText('一時停止中');
+    await screen.findByRole('button', { name: '再開' });
     expect(screen.queryByText(/前の操作の結果を確認/)).toBeNull();
     expect(screen.getByRole('button', { name: '再開' })).toBeTruthy();
   });
   it('終了確認をキャンセルすると終了 API を送信しない', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? active : { projects: [project] }));
     window.confirm = vi.fn(() => false);
-    mountTimer(); await screen.findByText('計測中');
+    mountTimer(); await screen.findByRole('button', { name: '一時停止' });
     fireEvent.click(screen.getByRole('button', { name: '終了して保存' }));
     expect(fetchMock.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
-    expect(screen.getByText('計測中')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '一時停止' })).toBeTruthy();
   });
   it('終了確認を承認すると実績保存結果を表示する', async () => {
     let current = active;
@@ -68,7 +68,7 @@ describe('タイマー画面', () => {
       return json({ ...idle, outcome: { action: 'finish', session_id: active.timer.timer_id, discarded: false } });
     });
     window.confirm = vi.fn(() => true);
-    mountTimer(); await screen.findByText('計測中');
+    mountTimer(); await screen.findByRole('button', { name: '一時停止' });
     fireEvent.click(screen.getByRole('button', { name: '終了して保存' }));
     await screen.findByText('作業実績を保存しました。');
     expect(commands).toHaveLength(1);
@@ -94,7 +94,7 @@ describe('タイマー画面', () => {
     expect(commands).toHaveLength(1);
     expect(commands[0].operation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     view.unmount(); mountTimer();
-    await screen.findByText('計測中');
+    await screen.findByRole('button', { name: '一時停止' });
     expect((screen.getByRole('button', { name: '終了して保存' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: '送信結果を確認・再送' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: '送信結果を確認・再送' })).toBeNull());
@@ -135,16 +135,15 @@ describe('ポモドーロの設定と画面復元', () => {
     localStorage.setItem(pomodoroKey(project.id), JSON.stringify(defaults));
     const focused: TimerSnapshot = { ...active, timer: { ...active.timer, mode: 'pomodoro', phase: 'focus', pomodoro: config, duration_ms: 60000, deadline_at: active.timer.started_at! + 60000 } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? focused : { projects: [project] }));
-    mountTimer(); await screen.findByText('集中中');
-    const input = screen.getByLabelText('集中（分）') as HTMLInputElement;
-    expect(input.value).toBe('1'); expect(input.closest('fieldset')?.disabled).toBe(true);
-    expect(screen.getByText('00:00:55', { selector: 'p' })).toBeTruthy();
+    mountTimer(); await screen.findByRole('timer');
+    expect(screen.queryByLabelText('集中（分）')).toBeNull();
+    expect(screen.getByRole('timer').textContent).toBe('00:55');
     expect(loadPomodoro(project.id)).toEqual(defaults);
   });
   it('自動移行後の休憩を表示し、次フェーズの開始ボタンを要求しない', async () => {
     const current: TimerSnapshot = { ...active, timer: { ...active.timer, mode: 'pomodoro', phase: 'short_break', pomodoro: config, completed_focus: 1, started_at: active.server_now, changed_at: active.server_now, duration_ms: 120000, deadline_at: active.server_now + 120000 } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? current : { projects: [project] }));
-    mountTimer(); await screen.findByText('短い休憩中');
+    mountTimer(); await screen.findByRole('timer');
     expect(screen.queryByRole('button', { name: '短い休憩を開始' })).toBeNull();
     expect(screen.getByRole('button', { name: '休憩をスキップ' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'ポモドーロを終了' })).toBeTruthy();
@@ -206,12 +205,92 @@ describe('タイマー方式と終了音', () => {
       pomodoro: { focus_minutes: 1, short_break_minutes: 1, long_break_minutes: 1, long_break_every: 4 },
       duration_ms: 60000, deadline_at: active.timer.started_at! + 60000 } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? current : { projects: [project] }));
-    mountTimer(); await screen.findByText(phase === 'focus' ? '集中中' : phase === 'short_break' ? '短い休憩中' : '長い休憩中');
+    mountTimer(); await screen.findByRole('timer');
     expect(play).not.toHaveBeenCalled();
     current = { ...current, timer: { ...current.timer, status: 'running', timer_id: crypto.randomUUID(), phase: phase === 'focus' ? 'short_break' : 'focus', changed_at: current.timer.deadline_at, deadline_at: current.timer.deadline_at! + 60000, started_at: current.timer.deadline_at } };
     await act(async () => { window.dispatchEvent(new Event('pageshow')); });
     await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
     await act(async () => { window.dispatchEvent(new Event('pageshow')); });
     expect(play).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('通常・ポモドーロ共通の専用画面', () => {
+  const config = { focus_minutes: 1, short_break_minutes: 1, long_break_minutes: 2, long_break_every: 2 };
+  it.each(['normal', 'focus', 'short_break', 'long_break'] as const)('%s を復元すると指定色と時間・アイコンだけを表示する', async (mode) => {
+    const snapshot: TimerSnapshot = { ...active, timer: { ...active.timer,
+      ...(mode === 'normal' ? {} : { mode: 'pomodoro', phase: mode, pomodoro: config, duration_ms: 60000, deadline_at: active.timer.started_at! + 60000 }) } };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? snapshot : { projects: [project] }));
+    const { default: App } = await import('../src/App');
+    render(createElement(MemoryRouter, null, createElement(App)));
+    const display = await screen.findByRole('timer');
+    expect(display.textContent).toBe(mode === 'normal' ? '00:00:05' : '00:55');
+    expect(display.closest('section')?.style.backgroundColor).toBe(mode === 'normal' ? '#253E49' : mode === 'focus' ? '#C94F45' : '#448A70');
+    expect(screen.queryByRole('navigation')).toBeNull();
+    expect(screen.queryByText('My Working Logger')).toBeNull();
+    expect(screen.queryByText(project.name)).toBeNull();
+    expect(screen.queryByText('経過時間')).toBeNull();
+    expect(screen.queryByText('一時停止合計')).toBeNull();
+    expect(screen.queryByText('集中中')).toBeNull();
+    expect(screen.queryByRole('button', { name: '終了音を確認' })).toBeNull();
+    expect(display.closest('section')?.textContent).toBe(display.textContent);
+    expect(screen.getAllByRole('button')).toHaveLength(mode.includes('break') ? 3 : 2);
+  });
+  it.each(['normal', 'pomodoro'] as const)('%s の開始・停止・再開・終了を操作し、終了後にナビゲーションを戻す', async (mode) => {
+    let current = idle; const commands: TimerCommand[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
+      if (String(url) !== '/api/timer') return json({ projects: [project] });
+      if (options?.method !== 'POST') return json(current);
+      const command: TimerCommand = JSON.parse(options.body as string); commands.push(command);
+      current = command.action === 'finish' ? idle : command.action === 'start'
+        ? { ...active, timer: { ...active.timer, ...(mode === 'pomodoro' ? { mode, phase: 'focus', pomodoro: config, duration_ms: 60000, deadline_at: active.timer.started_at! + 60000 } : {}) } }
+        : { ...current, timer: { ...current.timer, revision: current.timer.revision + 1, status: command.action === 'pause' ? 'paused' : 'running', changed_at: current.server_now } };
+      return json({ ...current, outcome: { action: command.action, session_id: command.action === 'finish' ? active.timer.timer_id : null, discarded: false } });
+    });
+    const { default: App } = await import('../src/App');
+    window.confirm = vi.fn(() => false);
+    render(createElement(MemoryRouter, null, createElement(App)));
+    await screen.findByLabelText('作業');
+    if (mode === 'pomodoro') fireEvent.click(screen.getByRole('button', { name: 'ポモドーロ' }));
+    fireEvent.click(screen.getByRole('button', { name: '開始' }));
+    const display = await screen.findByRole('timer');
+    const color = display.closest('section')?.style.backgroundColor;
+    expect(screen.queryByRole('navigation')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '一時停止' }));
+    await screen.findByRole('button', { name: '再開' });
+    expect(screen.getByRole('timer').closest('section')?.style.backgroundColor).toBe(color);
+    fireEvent.click(screen.getByRole('button', { name: '再開' }));
+    await screen.findByRole('button', { name: '一時停止' });
+    const finish = screen.getByRole('button', { name: mode === 'pomodoro' ? 'ポモドーロを終了' : '終了して保存' });
+    fireEvent.click(finish);
+    expect(commands.map(c => c.action)).toEqual(['start', 'pause', 'resume']);
+    expect(screen.getByRole('timer')).toBeTruthy();
+    window.confirm = vi.fn(() => true); fireEvent.click(finish);
+    await screen.findByText('作業実績を保存しました。');
+    expect(screen.getByRole('navigation')).toBeTruthy();
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(commands.map(c => c.action)).toEqual(['start', 'pause', 'resume', 'finish']);
+  });
+  it('自動フェーズ切替と休憩スキップで色・時間・操作が更新される', async () => {
+    let current: TimerSnapshot = { ...active, timer: { ...active.timer, mode: 'pomodoro', phase: 'focus', pomodoro: config, duration_ms: 60000, deadline_at: active.timer.started_at! + 60000 } };
+    const commands: TimerCommand[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
+      if (String(url) !== '/api/timer') return json({ projects: [project] });
+      if (options?.method !== 'POST') return json(current);
+      const command: TimerCommand = JSON.parse(options.body as string); commands.push(command);
+      current = { ...current, timer: { ...current.timer, revision: current.timer.revision + 1, phase: 'focus', started_at: current.server_now, changed_at: current.server_now, deadline_at: current.server_now + 60000 } };
+      return json({ ...current, outcome: { action: command.action, session_id: null, discarded: false } });
+    });
+    mountTimer(); await screen.findByRole('timer');
+    expect(screen.queryByRole('button', { name: '休憩をスキップ' })).toBeNull();
+    current = { ...current, server_now: active.server_now + 60000, timer: { ...current.timer, revision: 2, phase: 'short_break', started_at: active.server_now + 60000, changed_at: active.server_now + 60000, deadline_at: active.server_now + 120000 } };
+    await act(async () => { window.dispatchEvent(new Event('pageshow')); });
+    await screen.findByRole('button', { name: '休憩をスキップ' });
+    expect(screen.getByRole('timer').closest('section')?.style.backgroundColor).toBe('#448A70');
+    expect(screen.getByRole('timer').textContent).toBe('01:00');
+    fireEvent.click(screen.getByRole('button', { name: '休憩をスキップ' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '休憩をスキップ' })).toBeNull());
+    expect(screen.getByRole('timer').closest('section')?.style.backgroundColor).toBe('#C94F45');
+    expect(commands[0].action).toBe('skip');
   });
 });
