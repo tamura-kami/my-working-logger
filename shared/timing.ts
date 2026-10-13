@@ -20,3 +20,12 @@ export function remainingTime(timer: TimerState, now: number) {
   if (timer.status === 'waiting') return timer.duration_ms;
   return Math.max(0, timer.duration_ms - durations(timer, now).active);
 }
+
+export function cycleDurations(timer: TimerState, now: number) {
+  if (timer.mode !== 'pomodoro') return durations(timer, now);
+  if (timer.cycle_started_at == null) return { active: 0, paused: 0, elapsed: 0 };
+  const elapsed = Math.max(0, now - timer.cycle_started_at);
+  const focus = timer.phase === 'focus' ? Math.min(timer.duration_ms ?? 0, durations(timer, now).active) : 0;
+  const active = (timer.cycle_active_ms ?? 0) + focus;
+  return { active, paused: Math.max(0, elapsed - active), elapsed };
+}

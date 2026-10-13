@@ -111,18 +111,23 @@ describe('ポモドーロの設定と画面復元', () => {
     const second = { ...project, id: 'a81cec60-b018-4c76-a70e-f8f7853f874d', name: '別作業' };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? idle : { projects: [project, second] }));
     const view = mountTimer();
-    fireEvent.change(await screen.findByLabelText('タイマー方式'), { target: { value: 'pomodoro' } });
+    await screen.findByLabelText('作業');
+    await waitFor(() => expect((screen.getByLabelText('作業') as unknown as HTMLSelectElement).value).toBe(project.id));
+    fireEvent.click(screen.getByRole('button', { name: 'ポモドーロ' }));
     expect((screen.getByLabelText('集中（分）') as HTMLInputElement).value).toBe('25');
     fireEvent.change(screen.getByLabelText('集中（分）'), { target: { value: '35' } });
     expect(loadPomodoro(project.id).focus_minutes).toBe(35);
     fireEvent.change(screen.getByLabelText('作業'), { target: { value: second.id } });
+    fireEvent.click(screen.getByRole('button', { name: 'ポモドーロ' }));
     await waitFor(() => expect((screen.getByLabelText('集中（分）') as HTMLInputElement).value).toBe('25'));
     fireEvent.change(screen.getByLabelText('集中（分）'), { target: { value: '45' } });
     expect(loadPomodoro(second.id).focus_minutes).toBe(45);
     fireEvent.change(screen.getByLabelText('作業'), { target: { value: project.id } });
     await waitFor(() => expect((screen.getByLabelText('集中（分）') as HTMLInputElement).value).toBe('35'));
     view.unmount(); mountTimer();
-    fireEvent.change(await screen.findByLabelText('タイマー方式'), { target: { value: 'pomodoro' } });
+    await screen.findByLabelText('作業');
+    await waitFor(() => expect((screen.getByLabelText('作業') as unknown as HTMLSelectElement).value).toBe(project.id));
+    fireEvent.click(screen.getByRole('button', { name: 'ポモドーロ' }));
     await waitFor(() => expect((screen.getByLabelText('集中（分）') as HTMLInputElement).value).toBe('35'));
     expect(loadPomodoro(second.id).focus_minutes).toBe(45);
   });
@@ -136,23 +141,13 @@ describe('ポモドーロの設定と画面復元', () => {
     expect(screen.getByText('00:00:55', { selector: 'p' })).toBeTruthy();
     expect(loadPomodoro(project.id)).toEqual(defaults);
   });
-  it('満了復帰時は休憩開始待ちを表示し、操作するまで次フェーズを開始しない', async () => {
-    let current: TimerSnapshot = { ...active, timer: { ...active.timer, status: 'waiting', mode: 'pomodoro', phase: 'short_break', pomodoro: config, completed_focus: 1, started_at: null, changed_at: active.server_now, duration_ms: 120000, deadline_at: null } };
-    const commands: TimerCommand[] = [];
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
-      if (String(url) !== '/api/timer') return json({ projects: [project] });
-      if (options?.method !== 'POST') return json(current);
-      const input: TimerCommand = JSON.parse(options.body as string); commands.push(input);
-      current = { ...current, timer: { ...current.timer, revision: current.timer.revision + 1, status: 'running', started_at: current.server_now, changed_at: current.server_now, deadline_at: current.server_now + 120000 } };
-      return json({ ...current, outcome: { action: input.action, session_id: null, discarded: false } });
-    });
-    mountTimer();
-    const startBreak = await screen.findByRole('button', { name: '短い休憩を開始' });
-    expect(commands).toHaveLength(0);
-    expect(screen.getByText('短い休憩の開始待ち')).toBeTruthy();
-    fireEvent.click(startBreak); await screen.findByText('短い休憩中');
-    expect(commands).toHaveLength(1); expect(commands[0].action).toBe('start_break');
-    expect(screen.queryByText(/前の操作の結果を確認/)).toBeNull();
+  it('自動移行後の休憩を表示し、次フェーズの開始ボタンを要求しない', async () => {
+    const current: TimerSnapshot = { ...active, timer: { ...active.timer, mode: 'pomodoro', phase: 'short_break', pomodoro: config, completed_focus: 1, started_at: active.server_now, changed_at: active.server_now, duration_ms: 120000, deadline_at: active.server_now + 120000 } };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? current : { projects: [project] }));
+    mountTimer(); await screen.findByText('短い休憩中');
+    expect(screen.queryByRole('button', { name: '短い休憩を開始' })).toBeNull();
+    expect(screen.getByRole('button', { name: '休憩をスキップ' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'ポモドーロを終了' })).toBeTruthy();
   });
   it('不正・破損した保存設定は初期値を使い、不正な入力では開始できない', async () => {
     localStorage.setItem(pomodoroKey(project.id), '{broken');
@@ -160,7 +155,7 @@ describe('ポモドーロの設定と画面復元', () => {
     localStorage.setItem(pomodoroKey(project.id), JSON.stringify({ ...defaults, focus_minutes: 0 }));
     expect(loadPomodoro(project.id)).toEqual(defaults);
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? idle : { projects: [project] }));
-    mountTimer(); fireEvent.change(await screen.findByLabelText('タイマー方式'), { target: { value: 'pomodoro' } });
+    mountTimer(); fireEvent.click(await screen.findByRole('button', { name: 'ポモドーロ' }));
     fireEvent.change(screen.getByLabelText('集中（分）'), { target: { value: '0' } });
     expect((screen.getByRole('button', { name: '開始' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole('alert').textContent).toContain('整数');
@@ -182,5 +177,41 @@ describe('作業管理画面', () => {
     await screen.findByRole('button', { name: 'アーカイブを解除' });
     expect(updates).toEqual([{ archived: true }]);
     expect(screen.getByRole('heading', { name: '実装作業（アーカイブ済み）' })).toBeTruthy();
+  });
+});
+
+describe('タイマー方式と終了音', () => {
+  it('作業別の方式を切り替え、再読込後も復元する', async () => {
+    const other = { ...project, id: 'other', name: '別作業' };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? idle : { projects: [project, other] }));
+    const view = mountTimer();
+    const select = await screen.findByRole('button', { name: 'ポモドーロ' });
+    await waitFor(() => {
+      expect((screen.getByLabelText('作業') as unknown as HTMLSelectElement).value).toBe(project.id);
+      expect(select.closest('fieldset')?.disabled).toBe(false);
+    });
+    fireEvent.click(select);
+    expect(select.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.change(screen.getByLabelText('作業'), { target: { value: other.id } });
+    await waitFor(() => expect(select.getAttribute('aria-pressed')).toBe('false'));
+    fireEvent.change(screen.getByLabelText('作業'), { target: { value: project.id } });
+    await waitFor(() => expect(select.getAttribute('aria-pressed')).toBe('true'));
+    view.unmount(); mountTimer();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'ポモドーロ' }).getAttribute('aria-pressed')).toBe('true'));
+  });
+  it.each(['focus', 'short_break', 'long_break'] as const)('%s の満了遷移では一度だけ鳴らし、再取得では鳴らさない', async (phase) => {
+    const { TimerSound } = await import('../src/timerSound');
+    const play = vi.spyOn(TimerSound.prototype, 'play').mockReturnValue(true);
+    let current: TimerSnapshot = { ...active, timer: { ...active.timer, mode: 'pomodoro', phase,
+      pomodoro: { focus_minutes: 1, short_break_minutes: 1, long_break_minutes: 1, long_break_every: 4 },
+      duration_ms: 60000, deadline_at: active.timer.started_at! + 60000 } };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/timer' ? current : { projects: [project] }));
+    mountTimer(); await screen.findByText(phase === 'focus' ? '集中中' : phase === 'short_break' ? '短い休憩中' : '長い休憩中');
+    expect(play).not.toHaveBeenCalled();
+    current = { ...current, timer: { ...current.timer, status: 'running', timer_id: crypto.randomUUID(), phase: phase === 'focus' ? 'short_break' : 'focus', changed_at: current.timer.deadline_at, deadline_at: current.timer.deadline_at! + 60000, started_at: current.timer.deadline_at } };
+    await act(async () => { window.dispatchEvent(new Event('pageshow')); });
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    await act(async () => { window.dispatchEvent(new Event('pageshow')); });
+    expect(play).toHaveBeenCalledTimes(1);
   });
 });

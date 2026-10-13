@@ -33,7 +33,7 @@ app.get('/api/health', async (c) => {
     const row = await c.env.DB.prepare(
       'SELECT version FROM app_metadata WHERE id = 1',
     ).first<{ version: number }>();
-    if (row?.version !== 3) return c.json({ status: 'error', database: 'unavailable' }, 503);
+    if (row?.version !== 4) return c.json({ status: 'error', database: 'unavailable' }, 503);
     await resolveExpired(c.env.DB);
     return c.json({ status: 'ok', database: 'ok' });
   } catch {

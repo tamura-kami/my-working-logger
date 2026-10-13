@@ -16,3 +16,13 @@ export function savePomodoro(projectId: string, value: PomodoroSettings): boolea
   try { localStorage.setItem(pomodoroKey(projectId), JSON.stringify(value)); return true; }
   catch { return false; }
 }
+
+export const timerModeKey = (projectId: string) => `my-working-logger.timer-mode.${projectId}`;
+export function loadTimerMode(projectId: string): 'normal' | 'pomodoro' {
+  try { return localStorage.getItem(timerModeKey(projectId)) === 'pomodoro' ? 'pomodoro' : 'normal'; }
+  catch { return 'normal'; }
+}
+export function saveTimerMode(projectId: string, value: 'normal' | 'pomodoro'): boolean {
+  try { localStorage.setItem(timerModeKey(projectId), value); return true; }
+  catch { return false; }
+}

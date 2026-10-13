@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { durations, formatDuration, remainingTime } from '../shared/timing';
+import { cycleDurations, durations, formatDuration, remainingTime } from '../shared/timing';
 import type { TimerState } from '../shared/contracts';
 const running: TimerState = { mode: 'normal', phase: null, completed_focus: 0, pomodoro: null, duration_ms: null, deadline_at: null, revision: 1, timer_id: 'test', project_id: 'test', project_name: '作業', color: '#123456', status: 'running', started_at: 1000, changed_at: 5000, paused_ms: 1000 };
 describe('表示時間の復元', () => {
@@ -30,4 +30,13 @@ describe('ポモドーロ表示時間', () => {
     expect(remainingTime({ ...focused, status: 'waiting', started_at: null }, 1000000)).toBe(60000);
     expect(remainingTime(running, 10000)).toBeNull();
   });
+});
+
+it('サイクルの集中合計と休止時間を表示し、残り時間は現在フェーズだけから求める', () => {
+  const timer: TimerState = { ...running, mode: 'pomodoro', phase: 'short_break', started_at: 61000,
+    changed_at: 61000, paused_ms: 0, duration_ms: 120000, deadline_at: 181000,
+    cycle_started_at: 1000, cycle_active_ms: 60000 };
+  expect(cycleDurations(timer, 91000)).toEqual({ active: 60000, paused: 30000, elapsed: 90000 });
+  expect(remainingTime(timer, 91000)).toBe(90000);
+  expect(cycleDurations({ ...timer, phase: 'long_break', cycle_started_at: null, cycle_active_ms: 0 }, 91000)).toEqual({ active: 0, paused: 0, elapsed: 0 });
 });

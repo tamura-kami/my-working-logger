@@ -16,6 +16,7 @@ const commandSchema = z.discriminatedUnion('action', [
 ]);
 interface Operation { payload: string; session_id: string | null; discarded: number }
 type TimerRow = Omit<TimerState, 'pomodoro'> & {
+  cycle_id: string | null; cycle_started_at: number | null; cycle_active_ms: number;
   focus_minutes: number | null; short_break_minutes: number | null; long_break_minutes: number | null; long_break_every: number | null;
 };
 async function readState(db: D1Database): Promise<TimerState> {
@@ -28,30 +29,41 @@ async function readState(db: D1Database): Promise<TimerState> {
     revision: timer.revision, timer_id: timer.timer_id, project_id: timer.project_id, project_name: timer.project_name,
     color: timer.color, status: timer.status, started_at: timer.started_at, changed_at: timer.changed_at, paused_ms: timer.paused_ms,
     mode: timer.mode, phase: timer.phase, completed_focus: timer.completed_focus, duration_ms: timer.duration_ms, deadline_at: timer.deadline_at,
+    cycle_id: timer.cycle_id, cycle_started_at: timer.cycle_started_at, cycle_active_ms: timer.cycle_active_ms,
     pomodoro: timer.mode === 'pomodoro' ? { focus_minutes: focus_minutes!, short_break_minutes: short_break_minutes!, long_break_minutes: long_break_minutes!, long_break_every: long_break_every! } : null,
   };
 }
 const idleFields = `timer_id = NULL, project_id = NULL, status = 'idle', started_at = NULL, changed_at = NULL,
   paused_ms = 0, mode = 'normal', phase = NULL, completed_focus = 0, focus_minutes = NULL,
-  short_break_minutes = NULL, long_break_minutes = NULL, long_break_every = NULL, duration_ms = NULL, deadline_at = NULL`;
+  short_break_minutes = NULL, long_break_minutes = NULL, long_break_every = NULL, duration_ms = NULL, deadline_at = NULL, cycle_id = NULL, cycle_started_at = NULL, cycle_active_ms = 0`;
 
-// どの API からでも期限超過を解決する。休憩・次の集中は開始しない。
+// 遅延しても1フェーズだけ確定し、次のフェーズは現在時刻から開始する。
+// revision の条件と実績 INSERT を同じバッチに含めて二重確定を防ぐ。
 export async function resolveExpired(db: D1Database) {
   const state = await readState(db);
-  if (state.mode !== 'pomodoro' || state.status !== 'running' || state.deadline_at === null || Date.now() < state.deadline_at) return;
+  const now = Date.now();
+  if (state.mode !== 'pomodoro' || state.status !== 'running' || state.deadline_at === null || now < state.deadline_at) return;
   const guard = "id = 1 AND revision = ? AND timer_id = ? AND mode = 'pomodoro' AND status = 'running' AND deadline_at = ?";
   const args = [state.revision, state.timer_id, state.deadline_at];
   const statements: D1PreparedStatement[] = [];
-  if (state.phase === 'focus') {
-    statements.push(db.prepare(`INSERT INTO work_sessions (id, project_id, started_at, ended_at, paused_ms)
-      SELECT timer_id, project_id, started_at, deadline_at, paused_ms FROM timer_state WHERE ${guard}`).bind(...args));
-  }
   const count = state.completed_focus + (state.phase === 'focus' ? 1 : 0);
   const phase = state.phase === 'focus' ? (count % state.pomodoro!.long_break_every === 0 ? 'long_break' : 'short_break') : 'focus';
+  let active = (state.cycle_active_ms ?? 0) + (state.phase === 'focus' ? state.duration_ms! : 0);
+  let cycleId = state.cycle_id ?? null;
+  let cycleStart = state.cycle_started_at ?? null;
+  if (phase === 'long_break' && cycleId && cycleStart !== null) {
+    statements.push(db.prepare(`INSERT INTO work_sessions (id, project_id, started_at, ended_at, paused_ms)
+      SELECT cycle_id, project_id, cycle_started_at, ?, ? FROM timer_state WHERE ${guard}`)
+      .bind(state.deadline_at, state.deadline_at - cycleStart - active, ...args));
+    cycleId = null; cycleStart = null; active = 0;
+  } else if (phase === 'focus' && cycleId === null) {
+    cycleId = crypto.randomUUID(); cycleStart = now; active = 0;
+  }
   const duration = phaseDuration(state.pomodoro!, phase);
-  statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, status = 'waiting', phase = ?,
-    completed_focus = ?, started_at = NULL, changed_at = deadline_at, paused_ms = 0, duration_ms = ?, deadline_at = NULL
-    WHERE ${guard}`).bind(phase, count, duration, ...args));
+  statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, timer_id = ?, status = 'running', phase = ?,
+    completed_focus = ?, started_at = ?, changed_at = ?, paused_ms = 0, duration_ms = ?, deadline_at = ?,
+    cycle_id = ?, cycle_started_at = ?, cycle_active_ms = ? WHERE ${guard}`)
+    .bind(crypto.randomUUID(), phase, count, now, now, duration, now + duration, cycleId, cycleStart, active, ...args));
   await db.batch(statements);
 }
 function phaseDuration(settings: PomodoroSettings, phase: TimerState['phase']) {
@@ -86,25 +98,29 @@ api.post('/timer', async (c) => {
       if (state.status !== 'idle') throw new ApiError(409, '現在のタイマーを終了してから開始してください。');
       const settings = command.mode === 'pomodoro' ? command.pomodoro : null;
       const duration = settings ? settings.focus_minutes * 60000 : null;
+      const timerId = crypto.randomUUID();
       statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, timer_id = ?, project_id = ?,
         status = 'running', started_at = ?, changed_at = ?, paused_ms = 0, last_operation_id = ?, mode = ?, phase = ?,
-        completed_focus = 0, focus_minutes = ?, short_break_minutes = ?, long_break_minutes = ?, long_break_every = ?, duration_ms = ?, deadline_at = ?
+        completed_focus = 0, focus_minutes = ?, short_break_minutes = ?, long_break_minutes = ?, long_break_every = ?, duration_ms = ?, deadline_at = ?, cycle_id = ?, cycle_started_at = ?, cycle_active_ms = 0
         WHERE ${guard} AND status = 'idle' AND EXISTS (SELECT 1 FROM projects WHERE id = ? AND archived = 0)`)
-        .bind(crypto.randomUUID(), command.project_id, now, now, command.operation_id, settings ? 'pomodoro' : 'normal', settings ? 'focus' : null,
+        .bind(timerId, command.project_id, now, now, command.operation_id, settings ? 'pomodoro' : 'normal', settings ? 'focus' : null,
           settings?.focus_minutes ?? null, settings?.short_break_minutes ?? null, settings?.long_break_minutes ?? null, settings?.long_break_every ?? null,
-          duration, duration === null ? null : now + duration, command.revision, command.operation_id, command.project_id));
+          duration, duration === null ? null : now + duration, settings ? timerId : null, settings ? now : null, command.revision, command.operation_id, command.project_id));
     } else {
       if (state.timer_id !== command.timer_id || state.status === 'idle') throw new ApiError(409, '対象のタイマーは終了しています。');
       const active = state.status === 'running' || state.status === 'paused';
       const pausedMs = state.paused_ms + (state.status === 'paused' ? now - state.changed_at! : 0);
       if (command.action === 'finish') {
-        const recordsWork = active && (state.mode === 'normal' || state.phase === 'focus');
-        discarded = recordsWork && now - state.started_at! - pausedMs < 1000;
-        sessionId = recordsWork && !discarded ? state.timer_id : null;
+        const pomodoro = state.mode === 'pomodoro';
+        const workMs = pomodoro ? (state.cycle_active_ms ?? 0) + (active && state.phase === 'focus' ? now - state.started_at! - pausedMs : 0) : now - state.started_at! - pausedMs;
+        const recordsWork = pomodoro ? !!state.cycle_id : active;
+        discarded = recordsWork && workMs < 1000;
+        sessionId = recordsWork && !discarded ? (pomodoro ? state.cycle_id! : state.timer_id) : null;
         if (sessionId) {
+          const start = pomodoro ? state.cycle_started_at! : state.started_at!;
           statements.push(db.prepare(`INSERT INTO work_sessions (id, project_id, started_at, ended_at, paused_ms)
-            SELECT timer_id, project_id, started_at, ?, ? FROM timer_state WHERE ${guard} AND timer_id = ?`)
-            .bind(now, pausedMs, command.revision, command.operation_id, command.timer_id));
+            SELECT ?, project_id, ?, ?, ? FROM timer_state WHERE ${guard} AND timer_id = ?`)
+            .bind(sessionId, start, now, now - start - workMs, command.revision, command.operation_id, command.timer_id));
         }
         statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, ${idleFields}, last_operation_id = ?
           WHERE ${guard} AND timer_id = ?`).bind(command.operation_id, command.revision, command.operation_id, command.timer_id));
@@ -113,15 +129,17 @@ api.post('/timer', async (c) => {
           throw new ApiError(409, '現在のフェーズでは開始できません。');
         }
         statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, timer_id = ?, status = 'running',
-          started_at = ?, changed_at = ?, paused_ms = 0, deadline_at = ? + duration_ms, last_operation_id = ?
+          started_at = ?, changed_at = ?, paused_ms = 0, deadline_at = ? + duration_ms, last_operation_id = ?,
+          cycle_id = COALESCE(cycle_id, ?), cycle_started_at = COALESCE(cycle_started_at, ?)
           WHERE ${guard} AND timer_id = ? AND status = 'waiting'`)
-          .bind(crypto.randomUUID(), now, now, now, command.operation_id, command.revision, command.operation_id, command.timer_id));
+          .bind(crypto.randomUUID(), now, now, now, command.operation_id, command.action === 'start_focus' ? crypto.randomUUID() : null, command.action === 'start_focus' ? now : null, command.revision, command.operation_id, command.timer_id));
       } else if (command.action === 'skip') {
         if (state.mode !== 'pomodoro' || state.phase === 'focus') throw new ApiError(409, '休憩だけをスキップできます。');
-        statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, status = 'waiting', phase = 'focus',
-          started_at = NULL, changed_at = ?, paused_ms = 0, duration_ms = focus_minutes * 60000, deadline_at = NULL, last_operation_id = ?
+        statements.push(db.prepare(`UPDATE timer_state SET revision = revision + 1, status = 'running', phase = 'focus', timer_id = ?,
+          started_at = ?, changed_at = ?, paused_ms = 0, duration_ms = focus_minutes * 60000, deadline_at = ? + focus_minutes * 60000, last_operation_id = ?,
+          cycle_id = COALESCE(cycle_id, ?), cycle_started_at = COALESCE(cycle_started_at, ?)
           WHERE ${guard} AND timer_id = ?`)
-          .bind(now, command.operation_id, command.revision, command.operation_id, command.timer_id));
+          .bind(crypto.randomUUID(), now, now, now, command.operation_id, crypto.randomUUID(), now, command.revision, command.operation_id, command.timer_id));
       } else {
         const expected = command.action === 'pause' ? 'running' : 'paused';
         if (state.status !== expected) throw new ApiError(409, '現在の状態ではこの操作はできません。');

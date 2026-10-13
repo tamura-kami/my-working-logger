@@ -7,6 +7,9 @@ export interface PomodoroSettings {
   long_break_every: number;
 }
 export interface TimerState {
+  cycle_id?: string | null;
+  cycle_started_at?: number | null;
+  cycle_active_ms?: number;
   mode: 'normal' | 'pomodoro';
   phase: 'focus' | 'short_break' | 'long_break' | null;
   completed_focus: number;

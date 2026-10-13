@@ -16,7 +16,7 @@ beforeEach(async () => {
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   await env.DB.batch([
     env.DB.prepare('DELETE FROM timer_operations'), env.DB.prepare('DELETE FROM work_sessions'),
-    env.DB.prepare("UPDATE timer_state SET revision = 0, timer_id = NULL, project_id = NULL, status = 'idle', started_at = NULL, changed_at = NULL, paused_ms = 0, last_operation_id = NULL, mode = 'normal', phase = NULL, completed_focus = 0, focus_minutes = NULL, short_break_minutes = NULL, long_break_minutes = NULL, long_break_every = NULL, duration_ms = NULL, deadline_at = NULL"),
+    env.DB.prepare("UPDATE timer_state SET revision = 0, timer_id = NULL, project_id = NULL, status = 'idle', started_at = NULL, changed_at = NULL, paused_ms = 0, last_operation_id = NULL, mode = 'normal', phase = NULL, completed_focus = 0, focus_minutes = NULL, short_break_minutes = NULL, long_break_minutes = NULL, long_break_every = NULL, duration_ms = NULL, deadline_at = NULL, cycle_id = NULL, cycle_started_at = NULL, cycle_active_ms = 0"),
     env.DB.prepare('DELETE FROM projects'),
     env.DB.prepare("INSERT INTO projects (id, name, color) VALUES (?, '開発', '#175c50')").bind(projectId),
   ]);
@@ -45,102 +45,94 @@ async function execute(input: TimerCommand) {
 }
 async function action(name: Exclude<TimerCommand['action'], 'start'>) { return execute(await makeCommand(name)); }
 
-describe('ポモドーロの状態保存と実績', () => {
-  it('開始時の設定を固定し、途中で設定や別作業を送れない', async () => {
-    const started = await start();
-    expect(started.timer).toMatchObject({ mode: 'pomodoro', phase: 'focus', pomodoro: settings, duration_ms: 60000, deadline_at: now + 60000 });
-    expect((await request('/timer', { ...await makeCommand('pause'), pomodoro: { ...settings, focus_minutes: 10 } })).status).toBe(400);
-    expect((await status()).timer.pomodoro).toEqual(settings);
-    expect((await request('/timer', { action: 'start', operation_id: crypto.randomUUID(), revision: started.timer.revision, project_id: projectId })).status).toBe(409);
+describe('自動ポモドーロとサイクル単位の実績', () => {
+  it('集中→短休憩→集中→長休憩→集中へ自動移行し、集中合計を1件保存する', async () => {
+    const first = await start(); const began = now;
+    now += 60000;
+    expect((await status()).timer).toMatchObject({ status: 'running', phase: 'short_break', completed_focus: 1, deadline_at: now + 120000 });
+    expect(await sessions()).toHaveLength(0);
+    now += 120000;
+    expect((await status()).timer).toMatchObject({ status: 'running', phase: 'focus', deadline_at: now + 60000 });
+    now += 60000;
+    expect((await status()).timer).toMatchObject({ status: 'running', phase: 'long_break', completed_focus: 2, deadline_at: now + 180000, cycle_id: null });
+    expect(await sessions()).toEqual([expect.objectContaining({ id: first.timer.cycle_id, started_at: began, ended_at: now, active_seconds: 120, paused_ms: 120000 })]);
+    now += 180000;
+    const next = await status();
+    expect(next.timer).toMatchObject({ status: 'running', phase: 'focus', cycle_started_at: now, completed_focus: 2, pomodoro: settings });
+    expect(next.timer.cycle_id).not.toBe(first.timer.cycle_id);
+    now += 1000; await action('finish');
+    expect((await sessions())[0]).toMatchObject({ started_at: next.timer.started_at, paused_ms: 0, active_seconds: 1 });
   });
-  it('ブラウザを閉じていても次の API で予定時刻に集中を保存し、休憩を自動開始しない', async () => {
-    const started = await start(); const deadline = started.timer.deadline_at!;
-    now += 3600000;
-    expect((await request('/categories')).status).toBe(200);
-    const expired = await status();
-    expect(expired.timer).toMatchObject({ status: 'waiting', phase: 'short_break', started_at: null, deadline_at: null, completed_focus: 1, timer_id: started.timer.timer_id });
-    expect(await sessions()).toEqual([expect.objectContaining({ id: started.timer.timer_id, ended_at: deadline, active_seconds: 60, paused_ms: 0 })]);
-    now += 86400000;
-    expect((await status()).timer).toEqual(expired.timer);
+  it('集中と短休憩の手動停止を含めた休止時間を合算する', async () => {
+    const first = await start();
+    now += 10000; await action('pause'); now += 10001;
+    const resumed = await action('resume');
+    expect(resumed.timer.deadline_at).toBe(now + 50000);
+    now += 50000; await status();
+    now += 30000; await action('pause'); now += 20002;
+    const breakResume = await action('resume');
+    expect(breakResume.timer.deadline_at).toBe(now + 90000);
+    now += 90000; await status(); now += 60000; await status();
+    expect(await sessions()).toEqual([expect.objectContaining({ started_at: first.timer.started_at, ended_at: now, active_seconds: 120, paused_ms: 150003 })]);
+  });
+  it.each(['focus', 'short_break', 'paused_focus', 'paused_break'])('%s 中の終了でそれまでの集中を1件保存し、再送でも増えない', async (phase) => {
+    await start();
+    if (phase.includes('break')) { now += 60000; await status(); }
+    now += 12500;
+    if (phase.startsWith('paused')) { await action('pause'); now += 8000; }
+    const command = await makeCommand('finish');
+    const result = await execute(command);
+    expect(result.timer).toMatchObject({ status: 'idle', mode: 'normal', cycle_id: null });
+    expect(result.outcome.session_id).not.toBeNull();
+    expect((await sessions())[0]).toMatchObject({ ended_at: now, active_seconds: phase.includes('break') ? 60 : 12,
+      paused_ms: phase.includes('break') ? 12500 + (phase.startsWith('paused') ? 8000 : 0) : phase.startsWith('paused') ? 8000 : 0 });
+    expect((await execute(command)).outcome).toEqual(result.outcome);
     expect(await sessions()).toHaveLength(1);
   });
-  it('一時停止中は残り時間を減らさず、再開すると予定時刻を延期する', async () => {
-    const started = await start(); now += 10000;
-    const paused = await action('pause');
-    expect(paused.timer).toMatchObject({ status: 'paused', deadline_at: null });
-    now += 3600000;
+  it('0秒なら保存せず、一時停止中も満了しない', async () => {
+    await start(); now += 999; const paused = await action('pause'); now += 3600000;
     expect((await status()).timer).toEqual(paused.timer);
-    expect(await sessions()).toHaveLength(0);
-    const resumed = await action('resume');
-    expect(resumed.timer).toMatchObject({ paused_ms: 3600000, deadline_at: now + 50000 });
-    now += 50000;
-    await status();
-    expect((await sessions())[0]).toMatchObject({ started_at: started.timer.started_at, ended_at: resumed.timer.deadline_at, paused_ms: 3600000, active_seconds: 60 });
-  });
-  it('途中終了の集中は実作業を保存し、サイクルを終了する', async () => {
-    await start(); now += 12500; await action('pause'); now += 8000;
-    const result = await action('finish');
-    expect(result.timer).toMatchObject({ status: 'idle', mode: 'normal', pomodoro: null, completed_focus: 0 });
-    expect(result.outcome.session_id).not.toBeNull();
-    expect((await sessions())[0]).toMatchObject({ active_seconds: 12, paused_ms: 8000 });
-  });
-  it('0秒の途中終了は実績を破棄し、集中回数にも含めない', async () => {
-    await start(); now += 999;
     expect((await action('finish')).outcome.discarded).toBe(true);
     expect(await sessions()).toHaveLength(0);
   });
-  it('休憩は一時停止・再開・満了しても実績に混ざらない', async () => {
-    await start(); now += 60000;
-    await status();
-    const breakStart = await action('start_break');
-    expect(breakStart.timer).toMatchObject({ phase: 'short_break', duration_ms: 120000 });
-    now += 30000; await action('pause'); now += 1000000;
-    const resumed = await action('resume'); now = resumed.timer.deadline_at! + 1000;
-    const ready = await status();
-    expect(ready.timer).toMatchObject({ status: 'waiting', phase: 'focus', completed_focus: 1 });
+  it.each(['running', 'paused'])('短休憩の %s 状態からスキップすると即座に集中を開始する', async (state) => {
+    await start(); now += 60000; await status(); now += 5000;
+    if (state === 'paused') { await action('pause'); now += 7000; }
+    const skip = await makeCommand('skip'); const next = await execute(skip);
+    expect(next.timer).toMatchObject({ status: 'running', phase: 'focus', started_at: now, deadline_at: now + 60000 });
+    expect((await execute(skip)).timer).toEqual(next.timer);
+    now += 60000; await status();
+    expect((await sessions())[0]).toMatchObject({ active_seconds: 120, paused_ms: state === 'paused' ? 12000 : 5000 });
+    const nextCycle = await action('skip');
+    expect(nextCycle.timer).toMatchObject({ phase: 'focus', status: 'running', cycle_started_at: now });
+    now += 1000; await action('finish');
+    expect((await sessions())[0]).toMatchObject({ active_seconds: 1, paused_ms: 0 });
+  });
+  it('長休憩の一時停止・再開・終了では確定済み実績を追加しない', async () => {
+    await start({ ...settings, long_break_every: 1 }); now += 60000; await status();
+    now += 10000; await action('pause'); now += 50000;
+    const resumed = await action('resume'); expect(resumed.timer.deadline_at).toBe(now + 170000);
+    expect((await action('finish')).outcome).toMatchObject({ session_id: null, discarded: false });
     expect(await sessions()).toHaveLength(1);
-    const next = await action('start_focus');
-    expect(next.timer).toMatchObject({ status: 'running', phase: 'focus', pomodoro: settings, completed_focus: 1 });
-    expect(next.timer.timer_id).not.toBe(breakStart.timer.timer_id);
   });
-  it.each(['waiting', 'running', 'paused'] as const)('休憩の %s 状態からスキップでき、次の集中は手動開始', async (state) => {
-    await start(); now += 60000; await status();
-    if (state !== 'waiting') await action('start_break');
-    if (state === 'paused') { now += 5000; await action('pause'); }
-    expect((await action('skip')).timer).toMatchObject({ status: 'waiting', phase: 'focus', completed_focus: 1, deadline_at: null });
-    expect(await sessions()).toHaveLength(1);
-    expect((await request('/timer', await makeCommand('skip'))).status).toBe(409);
+  it('遅延した満了は1フェーズのみ進行し、集中時間を水増ししない', async () => {
+    const first = await start(); now += 3600000;
+    const rest = await status();
+    expect(rest.timer).toMatchObject({ phase: 'short_break', started_at: now, deadline_at: now + 120000 });
+    expect((await status()).timer).toEqual(rest.timer);
+    now += 125000; await status(); now += 65000;
+    const final = await status();
+    expect(final.timer.phase).toBe('long_break');
+    expect((await sessions())[0]).toMatchObject({ started_at: first.timer.started_at, ended_at: now - 5000, active_seconds: 120, paused_ms: 3665000 });
   });
-  it('指定回数ごとに長休憩を選び、長休憩後も固定した設定で次の集中を開始', async () => {
-    await start(); now += 60000; await status();
-    await action('skip'); await action('start_focus'); now += 60000;
-    const waiting = await status();
-    expect(waiting.timer).toMatchObject({ phase: 'long_break', completed_focus: 2, duration_ms: 180000, status: 'waiting' });
-    await action('start_break'); now += 180000;
-    expect((await status()).timer).toMatchObject({ phase: 'focus', status: 'waiting', completed_focus: 2 });
-    await action('start_focus'); now += 60000;
-    expect((await status()).timer).toMatchObject({ phase: 'short_break', completed_focus: 3 });
-    expect(await sessions()).toHaveLength(3);
-  });
-  it('休憩中/開始待ちに全体終了しても追加実績を作らない', async () => {
-    await start(); now += 60000; await status(); await action('start_break'); now += 5000;
-    const ended = await action('finish');
-    expect(ended.outcome).toMatchObject({ session_id: null, discarded: false });
-    expect(await sessions()).toHaveLength(1);
-    await start(); now += 60000; await status(); await action('finish');
-    expect(await sessions()).toHaveLength(2);
-  });
-  it('待機中に pause/resume や誤った開始フェーズを拒否する', async () => {
-    await start(); now += 60000; await status();
-    for (const name of ['pause', 'resume', 'start_focus'] as const) expect((await request('/timer', await makeCommand(name))).status).toBe(409);
-    await action('skip');
-    expect((await request('/timer', await makeCommand('start_break'))).status).toBe(409);
-  });
-  it('設定の不正値・省略を API と DB 制約で拒否する', async () => {
-    const base = { action: 'start', project_id: projectId, mode: 'pomodoro', revision: 0, operation_id: crypto.randomUUID() };
-    for (const invalid of [undefined, { ...settings, focus_minutes: 0 }, { ...settings, short_break_minutes: 181 }, { ...settings, long_break_every: 1.5 }]) {
-      expect((await request('/timer', { ...base, pomodoro: invalid })).status).toBe(400);
-    }
+  it('開始時設定を固定し、不正入力・フェーズ操作を拒否する', async () => {
+    const started = await start();
+    expect(started.timer.pomodoro).toEqual(settings);
+    expect((await request('/timer', { ...await makeCommand('pause'), pomodoro: settings })).status).toBe(400);
+    for (const name of ['skip', 'start_focus', 'start_break', 'resume'] as const) expect((await request('/timer', await makeCommand(name))).status).toBe(409);
+    await action('finish');
+    const base = { action: 'start', project_id: projectId, mode: 'pomodoro', revision: (await status()).timer.revision, operation_id: crypto.randomUUID() };
+    for (const invalid of [undefined, { ...settings, focus_minutes: 0 }, { ...settings, short_break_minutes: 181 }, { ...settings, long_break_every: 1.5 }]) expect((await request('/timer', { ...base, pomodoro: invalid })).status).toBe(400);
     expect((await request('/timer', { ...base, mode: 'normal', pomodoro: settings })).status).toBe(400);
     await start();
     await expect(env.DB.prepare('UPDATE timer_state SET focus_minutes = 0').run()).rejects.toThrow();
@@ -149,34 +141,18 @@ describe('ポモドーロの状態保存と実績', () => {
 });
 
 describe('満了処理の競合・冪等性', () => {
-  it('複数端末が別 API から同時に満了を処理しても1件だけ登録', async () => {
-    const started = await start(); now += 60000;
-    const responses = await Promise.all(['/timer', '/sessions', '/projects', '/health'].map((path) => request(path)));
-    expect(responses.map((r) => r.status)).toEqual([200, 200, 200, 200]);
-    expect(await sessions()).toHaveLength(1);
-    expect((await status()).timer).toMatchObject({ revision: started.timer.revision + 1, completed_focus: 1 });
-  });
-  it('予定時刻で pause/finish が競合した場合は先に満了し、実績は二重保存されない', async () => {
-    const started = await start();
+  it('複数端末の満了・終了が競合しても同一実績は1件だけ保存する', async () => {
+    const started = await start({ ...settings, long_break_every: 1 });
     const pause = await makeCommand('pause', started); const finish = await makeCommand('finish', started);
-    now = started.timer.deadline_at!;
-    const responses = await Promise.all([request('/timer', pause), request('/timer', finish), request('/timer')]);
-    expect(responses.slice(0, 2).map((r) => r.status)).toEqual([409, 409]);
+    now += 60000;
+    const responses = await Promise.all([request('/timer', pause), request('/timer', finish), ...['/timer', '/sessions', '/projects', '/health'].map((path) => request(path))]);
+    expect(responses.map((r) => r.status)).toEqual([409, 409, 200, 200, 200, 200]);
     expect(await sessions()).toHaveLength(1);
-    expect((await status()).timer.phase).toBe('short_break');
+    expect((await status()).timer).toMatchObject({ revision: started.timer.revision + 1, completed_focus: 1, phase: 'long_break' });
   });
-  it('次フェーズ開始の再送は新しい期間を増やさず、古い再送は現在の期間を変更しない', async () => {
-    await start(); now += 60000; await status();
-    const nextBreak = await makeCommand('start_break');
-    const breakStart = await execute(nextBreak);
-    expect((await execute(nextBreak)).timer.timer_id).toBe(breakStart.timer.timer_id);
-    await action('skip'); const next = await action('start_focus');
-    expect((await execute(nextBreak)).timer.timer_id).toBe(next.timer.timer_id);
-    expect(await sessions()).toHaveLength(1);
-  });
-  it('満了の状態更新が失敗した場合、実績 INSERT もロールバックする', async () => {
-    const started = await start(); now += 60000;
-    await env.DB.prepare("CREATE TRIGGER fail_expiry BEFORE UPDATE ON timer_state WHEN NEW.status = 'waiting' BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;").run();
+  it('確定の状態更新に失敗したら実績 INSERT もロールバックする', async () => {
+    const started = await start({ ...settings, long_break_every: 1 }); now += 60000;
+    await env.DB.prepare("CREATE TRIGGER fail_expiry BEFORE UPDATE ON timer_state WHEN NEW.phase = 'long_break' BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;").run();
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       expect((await request('/timer')).status).toBe(500);

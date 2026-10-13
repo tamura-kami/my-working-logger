@@ -14,3 +14,11 @@
 .settings legend { padding-top: 16px; }
 .settings p { font-size: 0.9rem; }
 @media (max-width: 420px) { .settings fieldset { grid-template-columns: minmax(0, 1fr); } }
+
+.modePicker { border: 0; padding: 0; margin: 24px 0 0; max-width: 480px; min-width: 0; }
+.modePicker legend { padding: 0; margin-bottom: 10px; }
+.modeOptions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.modeButton { display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 104px; padding: 12px 8px; border: 2px solid #dce4da; border-radius: 12px; background: white; color: #52645e; }
+.modeButton svg { width: 48px; height: 48px; }
+.modeButton[aria-pressed='true'] { border-color: #175c50; background: #eaf3ed; color: #175c50; font-weight: 700; }
+.modeButton:hover:not(:disabled) { border-color: #175c50; }
