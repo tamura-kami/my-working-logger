@@ -32,6 +32,7 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
   const fullTime = formatDuration(Number.isFinite(rounded) ? rounded : 0);
   const time = pomodoro && rounded < 3600000 ? fullTime.slice(3) : fullTime;
   const waiting = timer.status === 'expired';
+  const currentFocus = timer.completed_focus + (timer.phase === 'focus' && !waiting ? 1 : 0);
   const resume = timer.status === 'paused' || waiting;
   const primary: Action = waiting ? 'next' : resume ? 'resume' : 'pause';
   const color = !pomodoro ? '#253E49' : timer.phase === 'focus' ? '#C94F45' : '#448A70';
@@ -39,7 +40,7 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
     <div className={styles.display}>
       <p ref={display} tabIndex={-1} role="timer" aria-label={pomodoro ? '残り時間' : '実作業時間'}
         className={`${styles.time} ${time.length > 5 ? styles.hours : ''}`}>{time}</p>
-      {pomodoro && <p className={styles.progress} aria-label="サイクル内の集中回数">{timer.completed_focus + (timer.phase === 'focus' && timer.status !== 'expired' ? 1 : 0)} / {timer.pomodoro!.long_break_every}</p>}
+      {pomodoro && <p className={styles.progress} aria-label="サイクル内の集中回数">{currentFocus} / {timer.pomodoro!.long_break_every}</p>}
     </div>
     {waiting && !error && !pending && <p className={styles.notice} role="status">フェーズが満了しました。次のフェーズを開始してください。</p>}
     <div className={styles.controls}>
