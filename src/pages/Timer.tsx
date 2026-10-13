@@ -1,180 +1,163 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { PomodoroSettings, Project, TimerCommand, TimerResult, TimerSnapshot } from '../../shared/contracts';
+import type { PomodoroSettings, Project } from '../../shared/contracts';
 import { cycleDurations, formatDuration, remainingTime } from '../../shared/timing';
-import { api, errorMessage, operationId, RequestError } from '../api';
+import { api, errorMessage } from '../api';
 import { defaultPomodoro, validPomodoro } from '../../shared/pomodoro';
 import { loadPomodoro, savePomodoro, loadTimerMode, saveTimerMode } from '../pomodoroSettings';
 import { TimerSound } from '../timerSound';
+import { beginNext, emptyLocalTimer, expireLocalTimer, finishLocalTimer, pauseLocalTimer, readLocalTimer,
+  resumeLocalTimer, startLocalTimer, writeLocalTimer, type LocalTimer } from '../localTimer';
 import styles from './Timer.module.css';
 import ActiveTimer from '../components/ActiveTimer';
 
-const notificationKey = 'my-working-logger.timer-updated';
-const pendingKey = 'my-working-logger.pending-timer-command';
-function readPending(): TimerCommand | null {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(pendingKey) ?? 'null');
-    if (value && typeof value.operation_id === 'string' && Number.isInteger(value.revision)
-      && ['start', 'pause', 'resume', 'finish', 'start_break', 'start_focus', 'skip'].includes(value.action)) return value;
-  } catch { /* Storage 無効時も、その画面内では再送可能。 */ }
-  return null;
-}
 export default function Timer({ onActiveChange }: { onActiveChange?: (active: boolean) => void }) {
-  const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
+  const [state, setState] = useState<LocalTimer>(emptyLocalTimer);
+  const current = useRef(state);
+  const [loaded, setLoaded] = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState('');
-  const selectedRef = useRef('');
   const [mode, setMode] = useState<'normal' | 'pomodoro'>('normal');
   const [settings, setSettings] = useState<PomodoroSettings>({ ...defaultPomodoro });
   const [storageError, setStorageError] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [pending, setPending] = useState<TimerCommand | null>(readPending);
-  const [tick, setTick] = useState(0);
-  const anchor = useRef({ now: 0, monotonic: 0 });
-  const version = useRef(0);
-  const inFlight = useRef(false);
-  const mounted = useRef(true);
+  const sending = useRef(false);
+  const mounted = useRef(false);
+  const [, setTick] = useState(0);
   const sound = useRef(new TimerSound());
   const [soundNotice, setSoundNotice] = useState('開始・再開時に終了音を有効にします。再読込後は「終了音を確認」を押してください。');
-  const previousTimer = useRef<TimerSnapshot['timer'] | null>(null);
-  const sounded = useRef<string | null>(null);
-  const ring = useCallback((id: string | null) => {
-    if (!id || sounded.current === id) return;
-    sounded.current = id;
-    if (!sound.current.play()) setSoundNotice('終了音を再生できません。「終了音を確認」を押して有効にしてください。');
-  }, []);
   async function enableSound(test = false) {
     const enabled = await sound.current.enable();
     if (test && enabled) sound.current.play();
     setSoundNotice(enabled ? '終了音は有効です。集中・休憩の満了時に鳴ります。' : '終了音を有効にできません。ブラウザと端末の音量設定を確認してください。');
   }
-  const apply = useCallback((value: TimerSnapshot, notify = true) => {
-    const previous = previousTimer.current;
-    // フェーズごとに満了音を一度だけ鳴らす。
-    if (notify && previous?.mode === 'pomodoro' && previous.status === 'running'
-      && value.timer.mode === 'pomodoro' && value.timer.phase !== previous.phase
-      && previous.deadline_at !== null && value.timer.changed_at! >= previous.deadline_at) ring(`${previous.timer_id}:${previous.deadline_at}`);
-    previousTimer.current = value.timer;
-    anchor.current = { now: value.server_now, monotonic: performance.now() };
-    setSnapshot(value);
-  }, [ring]);
+  const commit = useCallback((next: LocalTimer): boolean => {
+    try {
+      writeLocalTimer(next); current.current = next;
+      if (mounted.current) { setState(next); setStorageError(''); }
+      return true;
+    } catch {
+      if (mounted.current) setStorageError('タイマー・実績を保存できません。ブラウザのストレージ設定や空き容量を確認してください。操作は確定していません。');
+      return false;
+    }
+  }, []);
+  const flush = useCallback(async () => {
+    if (sending.current || !mounted.current) return;
+    sending.current = true; setBusy(true); setError('');
+    try {
+      while (mounted.current && current.current.pending.length) {
+        const record = current.current.pending[0];
+        await api('/sessions', { method: 'POST', body: JSON.stringify(record) });
+        if (!mounted.current) return;
+        if (!commit({ ...current.current, pending: current.current.pending.filter((s) => s.id !== record.id) })) return;
+        setMessage('作業実績を保存しました。');
+      }
+    } catch (e) { if (mounted.current) setError(errorMessage(e)); }
+    finally { sending.current = false; if (mounted.current) setBusy(false); }
+  }, [commit]);
   const chooseProject = useCallback((id: string) => {
-    selectedRef.current = id;
-    setSelected(id);
-    setSettings(loadPomodoro(id));
-    setMode(loadTimerMode(id));
-    setStorageError('');
+    setSelected(id); setSettings(loadPomodoro(id)); setMode(loadTimerMode(id));
   }, []);
   const refresh = useCallback(async () => {
-    if (inFlight.current) return;
-    const requestVersion = ++version.current;
     try {
-      const [value, list] = await Promise.all([api<TimerSnapshot>('/timer'), api<{ projects: Project[] }>('/projects')]);
-      if (!mounted.current || requestVersion !== version.current) return;
-      if (!list.projects.some((p) => p.id === selectedRef.current)) chooseProject(list.projects[0]?.id ?? '');
-      apply(value); setProjects(list.projects); setError('');
-    } catch (e) {
-      if (mounted.current && requestVersion === version.current) setError(errorMessage(e));
-    }
-  }, [apply, chooseProject]);
+      const list = await api<{ projects: Project[] }>('/projects');
+      if (!mounted.current) return;
+      setProjects(list.projects); chooseProject(list.projects[0]?.id ?? '');
+    } catch (e) { if (mounted.current) setError(errorMessage(e)); }
+  }, [chooseProject]);
   useEffect(() => {
     mounted.current = true;
-    void refresh();
-    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, 30000);
-    const tickTimer = window.setInterval(() => { if (!document.hidden) setTick((t) => t + 1); }, 250);
-    const onVisible = () => { if (!document.hidden) void refresh(); };
-    const onStorage = (event: StorageEvent) => { if (event.key === notificationKey && !document.hidden) void refresh(); };
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('focus', onVisible);
-    window.addEventListener('pageshow', onVisible);
-    window.addEventListener('online', onVisible);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      mounted.current = false; ++version.current; sound.current.close();
-      clearInterval(timer); clearInterval(tickTimer);
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('focus', onVisible); window.removeEventListener('pageshow', onVisible);
-      window.removeEventListener('online', onVisible); document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [refresh]);
-  function editSettings(key: keyof PomodoroSettings, value: number) {
-    const next = { ...settings, [key]: value };
-    setSettings(next);
-    if (validPomodoro(next)) setStorageError(savePomodoro(selected, next) ? '' : 'このブラウザでは設定を保存できません。現在の画面内では利用できます。');
-  }
-  function remember(command: TimerCommand | null) {
-    setPending(command);
-    try { if (command) sessionStorage.setItem(pendingKey, JSON.stringify(command)); else sessionStorage.removeItem(pendingKey); } catch { /* memory 上で保持 */ }
-  }
-  async function send(command: TimerCommand) {
-    if (inFlight.current) return;
-    inFlight.current = true; ++version.current; setBusy(true); setError(''); setMessage(''); remember(command);
     try {
-      const result = await api<TimerResult>('/timer', { method: 'POST', body: JSON.stringify(command) });
-      if (!mounted.current) return;
-      apply(result, false); remember(null);
-      try { localStorage.setItem(notificationKey, command.operation_id); } catch { /* 他タブは定期読取で同期 */ }
-      if (result.outcome.action === 'finish') setMessage(result.outcome.discarded ? '実作業時間が0秒のため、実績は保存しませんでした。' : result.outcome.session_id ? '作業実績を保存しました。' : 'ポモドーロを終了しました。');
+      const saved = readLocalTimer();
+      current.current = saved; setState(saved);
+      commit(expireLocalTimer(saved, Date.now(), false));
+      void flush();
     } catch (e) {
-      if (!mounted.current) return;
-      // 競合・入力拒否は未実行。通信失敗/5xx は同じ ID で結果を確認・再送する。
-      if (e instanceof RequestError && [400, 403, 404, 409].includes(e.status)) remember(null);
-      setError(errorMessage(e));
-    } finally {
-      inFlight.current = false;
-      if (mounted.current) { setBusy(false); void refresh(); }
+      setBlocked(true); setStorageError(e instanceof Error ? e.message : '保存されたタイマーを読み込めません。');
     }
+    setLoaded(true); void refresh();
+    let lastTick = Date.now();
+    let suspended = document.hidden;
+    const advance = (automatic: boolean) => {
+      const before = current.current;
+      const next = expireLocalTimer(before, Date.now(), automatic);
+      if (next !== before && commit(next)) { sound.current.play(); void flush(); }
+    };
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      if (!document.hidden) { advance(!suspended && now - lastTick < 5000); suspended = false; setTick((t) => t + 1); }
+      else suspended = true;
+      lastTick = now;
+    }, 250);
+    const restore = () => {
+      if (document.hidden) { suspended = true; return; }
+      advance(false); suspended = false; lastTick = Date.now(); setTick((t) => t + 1); void flush();
+    };
+    const hide = () => { suspended = true; };
+    const online = () => { void flush(); };
+    document.addEventListener('visibilitychange', restore);
+    window.addEventListener('pagehide', hide); window.addEventListener('pageshow', restore);
+    window.addEventListener('focus', restore); window.addEventListener('online', online);
+    return () => {
+      mounted.current = false; sound.current.close(); clearInterval(interval);
+      document.removeEventListener('visibilitychange', restore);
+      window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', restore);
+      window.removeEventListener('focus', restore); window.removeEventListener('online', online);
+    };
+  }, [commit, flush, refresh]);
+  function editSettings(key: keyof PomodoroSettings, value: number) {
+    const next = { ...settings, [key]: value }; setSettings(next);
+    if (validPomodoro(next)) setStorageError(savePomodoro(selected, next) ? '' : 'このブラウザでは設定を保存できません。');
   }
-  function act(action: TimerCommand['action']) {
-    if (!snapshot || busy || pending) return;
-    const timer = snapshot.timer;
-    if (action === 'finish' && !window.confirm(timer.mode === 'pomodoro' ? 'ポモドーロを終了しますか？ここまでの集中時間をまとめて保存します。' : 'この作業を終了して実績を保存しますか？')) return;
-    if (['start', 'resume', 'start_break', 'start_focus'].includes(action)) void enableSound();
-    const base = { operation_id: operationId(), revision: timer.revision };
+  function act(action: 'start' | 'pause' | 'resume' | 'finish' | 'next' | 'skip') {
+    if (blocked || !loaded) return;
+    let value = current.current;
+    if (action === 'finish' && !window.confirm(value.timer?.mode === 'pomodoro' ? 'ポモドーロを終了しますか？ここまでの集中時間をまとめて保存します。' : 'この作業を終了して実績を保存しますか？')) return;
+    const now = Date.now();
+    value = expireLocalTimer(value, now, false);
+    if (['start', 'resume', 'next', 'skip'].includes(action)) void enableSound();
     if (action === 'start') {
-      if (!selected) return;
-      if (mode === 'pomodoro') {
-        if (!validPomodoro(settings)) return;
-        savePomodoro(selected, settings);
-        void send({ ...base, action, project_id: selected, mode, pomodoro: settings });
-      } else void send({ ...base, action, project_id: selected });
-    }
-    else if (timer.timer_id) void send({ ...base, action, timer_id: timer.timer_id });
+      const project = projects.find((p) => p.id === selected);
+      if (!project || value.timer || (mode === 'pomodoro' && !validPomodoro(settings))) return;
+      value = startLocalTimer(value, project, mode, settings, now);
+    } else if (!value.timer) return;
+    else if (action === 'finish') {
+      const count = value.pending.length;
+      value = finishLocalTimer(value, now);
+      setMessage(value.pending.length > count ? '作業実績を保存しています。' : 'タイマーを終了しました。');
+    } else if (action === 'next' || (action === 'skip' && value.timer.phase !== 'focus')) value = beginNext(value, now);
+    else if (action === 'pause' && value.timer.status === 'running') value = pauseLocalTimer(value, now);
+    else if (action === 'resume' && value.timer.status === 'paused') value = resumeLocalTimer(value, now);
+    if (commit(value) && value.pending.length) void flush();
   }
-  const timer = snapshot?.timer;
-  const now = anchor.current.now + Math.max(0, performance.now() - anchor.current.monotonic);
+  const timer = state.timer;
+  const now = Date.now();
   const time = timer ? cycleDurations(timer, now) : { active: 0, paused: 0, elapsed: 0 };
   const remaining = timer ? remainingTime(timer, now) : null;
-  const effectiveMode = !timer || timer.status === 'idle' ? mode : timer.mode;
-  const activeSettings = timer?.mode === 'pomodoro' ? timer.pomodoro! : settings;
-  const expirationCheck = useRef<string | null>(null);
-  useEffect(() => {
-    if (timer?.mode === 'pomodoro' && timer.status === 'running' && remaining === 0 && !busy) {
-      const key = `${timer.timer_id}:${timer.revision}`;
-      if (expirationCheck.current !== key) { expirationCheck.current = key; ring(`${timer.timer_id}:${timer.deadline_at}`); void refresh(); }
-    } else if (remaining !== 0) expirationCheck.current = null;
-  }, [timer, remaining, busy, refresh, tick, ring]);
+  const effectiveMode = timer?.mode ?? mode;
+  const activeSettings = timer?.pomodoro ?? settings;
   const primaryTime = effectiveMode === 'pomodoro' ? remaining ?? settings.focus_minutes * 60000 : time.active;
-  const controlsDisabled = busy || !!pending;
-  const active = !!timer && timer.status !== 'idle';
+  const controlsDisabled = blocked || !loaded;
+  const pending = state.pending.length > 0;
+  const active = !!timer;
   useLayoutEffect(() => {
     onActiveChange?.(active);
     return () => onActiveChange?.(false);
   }, [active, onActiveChange]);
-  void tick;
-  if (active) return <ActiveTimer timer={timer} milliseconds={primaryTime} disabled={controlsDisabled}
-    busy={busy} error={error} pending={!!pending} onAction={act} onRefresh={() => void refresh()}
-    onRetry={() => { if (pending) void send(pending); }} />;
+  if (active) return <ActiveTimer timer={timer!} milliseconds={primaryTime} disabled={controlsDisabled}
+    busy={busy} error={storageError || error} pending={!!pending} onAction={act} onRefresh={() => void flush()}
+    onRetry={() => void flush()} />;
   return <section aria-labelledby="timer-heading">
     <h1 id="timer-heading">タイマー</h1><p>今日の作業を記録します。</p>
-    {!timer ? <p role="status">読み込み中…</p> : <>
-      <label className={styles.select}>作業<select value={selected} disabled={busy || !!pending || !projects.length} onChange={(e) => chooseProject(e.target.value)}>
+    {!loaded ? <p role="status">読み込み中…</p> : <>
+      <label className={styles.select}>作業<select value={selected} disabled={controlsDisabled || !projects.length} onChange={(e) => chooseProject(e.target.value)}>
         {!projects.length && <option value="">作業がありません</option>}
         {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select></label>
-      {timer.status === 'idle' && <fieldset className={styles.modePicker} disabled={controlsDisabled || !selected}>
+      {!active && <fieldset className={styles.modePicker} disabled={controlsDisabled || !selected}>
         <legend>タイマー方式</legend>
         <div className={styles.modeOptions}>
           {(['normal', 'pomodoro'] as const).map((choice) => <button key={choice} type="button"
@@ -198,26 +181,25 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
         <p className={styles.time}>{formatDuration(effectiveMode === 'pomodoro' ? settings.focus_minutes * 60000 : 0)}</p>
         <button disabled={controlsDisabled || !selected || (mode === 'pomodoro' && !validPomodoro(settings))} onClick={() => act('start')}>開始</button>
       </div>
-      {effectiveMode === 'pomodoro' && <details className={styles.settings} open={timer.status === 'idle'}>
-        <summary>ポモドーロ設定{timer.status !== 'idle' && '（開始時の設定）'}</summary>
-        <fieldset disabled={controlsDisabled || timer.status !== 'idle' || !selected}>
+      {effectiveMode === 'pomodoro' && <details className={styles.settings} open={!active}>
+        <summary>ポモドーロ設定{active && '（開始時の設定）'}</summary>
+        <fieldset disabled={controlsDisabled || active || !selected}>
           <legend>作業別の設定</legend>
           {([['focus_minutes', '集中（分）'], ['short_break_minutes', '短い休憩（分）'], ['long_break_minutes', '長い休憩（分）'], ['long_break_every', '長い休憩までの集中回数']] as const).map(([key, label]) =>
             <label key={key}>{label}<input type="number" inputMode="numeric" min={1} max={key === 'long_break_every' ? 20 : 180} step={1}
               value={Number.isFinite(activeSettings[key]) ? activeSettings[key] : ''} onChange={(e) => editSettings(key, e.target.valueAsNumber)} /></label>)}
         </fieldset>
-        <p>{timer.status === 'idle' ? '作業ごとに、このブラウザに自動保存します。時間は1〜180分、回数は1〜20回で指定してください。' : 'このポモドーロを終了するまで、開始時の設定を使用します。'}</p>
-        {timer.status === 'idle' && !validPomodoro(settings) && <p role="alert">時間と回数を指定範囲の整数で入力してください。</p>}
+        <p>{!active ? '作業ごとに、このブラウザに自動保存します。時間は1〜180分、回数は1〜20回で指定してください。' : 'このポモドーロを終了するまで、開始時の設定を使用します。'}</p>
+        {!active && !validPomodoro(settings) && <p role="alert">時間と回数を指定範囲の整数で入力してください。</p>}
       </details>}
-      {!projects.length && timer.status === 'idle' && <p><Link to="/projects">作業管理</Link>で作業を追加してください。</p>}
-      <p className={styles.note}>{effectiveMode === 'pomodoro' ? '画面を開いている間、集中と休憩が自動で切り替わります。長い休憩の直前に集中時間をまとめて保存し、短い休憩と一時停止は休止時間に含めます。画面を閉じている間の自動進行は保証しません。' : 'ブラウザを閉じても計測は続きます。一時停止中はその状態で復元します。'}</p>
+      {!projects.length && !active && <p><Link to="/projects">作業管理</Link>で作業を追加してください。</p>}
+      <p className={styles.note}>{effectiveMode === 'pomodoro' ? '画面を開いている間、集中と休憩が自動で切り替わります。長い休憩の直前に集中時間をまとめて保存し、短い休憩と一時停止は休止時間に含めます。復帰時に満了していた場合は00:00で停止し、操作して次へ進みます。' : 'ブラウザを閉じても計測は続きます。一時停止中はその状態で復元します。'}</p>
     </>}
     <p><button onClick={() => void enableSound(true)}>終了音を確認</button> {soundNotice}</p>
     <p className={styles.note}>画面を閉じた状態や端末のスリープ中は終了音を鳴らせません。</p>
     {storageError && <p role="alert">{storageError}</p>}
     {error && <p role="alert">{error} <button disabled={busy} onClick={() => void refresh()}>状態を再読み込み</button></p>}
     {message && <p role="status">{message}</p>}
-    {pending && !busy && <div role="status"><p>前の操作の結果を確認してください。同じ操作 ID で安全に再送できます。</p>
-      <button disabled={busy} onClick={() => void send(pending)}>送信結果を確認・再送</button></div>}
+    {pending && <div role="status"><p>未保存の実績が {state.pending.length} 件あります。</p><button disabled={busy} onClick={() => void flush()}>実績を再送</button></div>}
   </section>;
 }

@@ -14,3 +14,7 @@
   .controls { bottom: max(8px, env(safe-area-inset-bottom)); }
   .controls button { width: 48px; height: 48px; padding: 10px; }
 }
+
+.display { text-align: center; }
+.progress { margin: 16px 0 0; color: #fff; font-size: 1.25rem; }
+.notice { position: absolute; bottom: max(108px, calc(env(safe-area-inset-bottom) + 84px)); left: 16px; right: 16px; margin: 0; text-align: center; font-size: .9rem; }

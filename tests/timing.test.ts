@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cycleDurations, durations, formatDuration, remainingTime } from '../shared/timing';
 import type { TimerState } from '../shared/contracts';
-const running: TimerState = { mode: 'normal', phase: null, completed_focus: 0, pomodoro: null, duration_ms: null, deadline_at: null, revision: 1, timer_id: 'test', project_id: 'test', project_name: '作業', color: '#123456', status: 'running', started_at: 1000, changed_at: 5000, paused_ms: 1000 };
+const running: TimerState = { mode: 'normal', phase: null, completed_focus: 0, pomodoro: null, duration_ms: null, deadline_at: null, timer_id: 'test', project_id: 'test', project_name: '作業', color: '#123456', status: 'running', started_at: 1000, changed_at: 5000, paused_ms: 1000 };
 describe('表示時間の復元', () => {
   it('tick 回数に依存せず、再開後の時刻差から実作業を表示', () => {
     expect(durations(running, 10000)).toEqual({ active: 8000, elapsed: 9000, paused: 1000 });
@@ -26,8 +26,8 @@ describe('ポモドーロ表示時間', () => {
     expect(remainingTime({ ...focused, status: 'paused', deadline_at: null }, 1000000)).toBe(57000);
     expect(remainingTime(focused, 1000000)).toBe(0);
   });
-  it('開始待ちでは設定した期間を表示し、通常タイマーには残り時間がない', () => {
-    expect(remainingTime({ ...focused, status: 'waiting', started_at: null }, 1000000)).toBe(60000);
+  it('満了停止では0を表示し、通常タイマーには残り時間がない', () => {
+    expect(remainingTime({ ...focused, status: 'expired' }, 1000000)).toBe(0);
     expect(remainingTime(running, 10000)).toBeNull();
   });
 });

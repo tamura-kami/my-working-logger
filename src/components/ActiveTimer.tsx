@@ -3,7 +3,7 @@ import type { TimerState } from '../../shared/contracts';
 import { formatDuration } from '../../shared/timing';
 import styles from './ActiveTimer.module.css';
 
-type Action = 'pause' | 'resume' | 'finish' | 'skip' | 'start_focus' | 'start_break';
+type Action = 'pause' | 'resume' | 'finish' | 'skip' | 'next';
 interface Props {
   timer: TimerState;
   milliseconds: number;
@@ -31,13 +31,17 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
   const rounded = pomodoro ? Math.ceil(milliseconds / 1000) * 1000 : milliseconds;
   const fullTime = formatDuration(Number.isFinite(rounded) ? rounded : 0);
   const time = pomodoro && rounded < 3600000 ? fullTime.slice(3) : fullTime;
-  const waiting = timer.status === 'waiting'; // 旧版から移行した開始待ちの復元。
+  const waiting = timer.status === 'expired';
   const resume = timer.status === 'paused' || waiting;
-  const primary: Action = waiting ? timer.phase === 'focus' ? 'start_focus' : 'start_break' : resume ? 'resume' : 'pause';
+  const primary: Action = waiting ? 'next' : resume ? 'resume' : 'pause';
   const color = !pomodoro ? '#253E49' : timer.phase === 'focus' ? '#C94F45' : '#448A70';
   return <section className={styles.screen} style={{ backgroundColor: color }} aria-label={pomodoro ? 'ポモドーロタイマー' : '通常タイマー'} aria-busy={busy}>
-    <p ref={display} tabIndex={-1} role="timer" aria-label={pomodoro ? '残り時間' : '実作業時間'}
-      className={`${styles.time} ${time.length > 5 ? styles.hours : ''}`}>{time}</p>
+    <div className={styles.display}>
+      <p ref={display} tabIndex={-1} role="timer" aria-label={pomodoro ? '残り時間' : '実作業時間'}
+        className={`${styles.time} ${time.length > 5 ? styles.hours : ''}`}>{time}</p>
+      {pomodoro && <p className={styles.progress} aria-label="サイクル内の集中回数">{timer.completed_focus + (timer.phase === 'focus' && timer.status !== 'expired' ? 1 : 0)} / {timer.pomodoro!.long_break_every}</p>}
+    </div>
+    {waiting && !error && !pending && <p className={styles.notice} role="status">フェーズが満了しました。次のフェーズを開始してください。</p>}
     <div className={styles.controls}>
       <button type="button" aria-label={waiting ? '次のフェーズを開始' : resume ? '再開' : '一時停止'} disabled={disabled} onClick={() => onAction(primary)}><Icon name={resume ? 'play' : 'pause'} /></button>
       {pomodoro && timer.phase !== 'focus' && <button type="button" className={styles.secondary} aria-label="休憩をスキップ" disabled={disabled} onClick={() => onAction('skip')}><Icon name="skip" /></button>}
@@ -45,7 +49,7 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
       {pending && !busy ? <button type="button" aria-label="送信結果を確認・再送" onClick={onRetry}><Icon name="retry" /></button> :
         error && <button type="button" aria-label="状態を再読み込み" title={error} disabled={busy} onClick={onRefresh}><Icon name="retry" /></button>}
     </div>
-    {error && <p role="alert" className={styles.srOnly}>{error}</p>}
-    {pending && !busy && <p role="status" className={styles.srOnly}>前の操作の結果を確認してください。送信結果を確認・再送ボタンから再送できます。</p>}
+    {error && <p role="alert" className={styles.notice}>{error}</p>}
+    {pending && !busy && !error && <p role="status" className={styles.notice}>未保存の実績があります。再送ボタンから再送できます。</p>}
   </section>;
 }
