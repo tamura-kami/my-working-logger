@@ -14,6 +14,8 @@ interface Props {
   onAction: (action: Action) => void;
   onRefresh: () => void;
   onRetry: () => void;
+  soundWarning?: string;
+  onEnableSound?: () => void;
 }
 function Icon({ name }: { name: 'pause' | 'play' | 'stop' | 'skip' | 'retry' }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -24,7 +26,7 @@ function Icon({ name }: { name: 'pause' | 'play' | 'stop' | 'skip' | 'retry' }) 
       <><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5" /></>}
   </svg>;
 }
-export default function ActiveTimer({ timer, milliseconds, disabled, busy, error, pending, onAction, onRefresh, onRetry }: Props) {
+export default function ActiveTimer({ timer, milliseconds, disabled, busy, error, pending, onAction, onRefresh, onRetry, soundWarning, onEnableSound }: Props) {
   const display = useRef<HTMLParagraphElement>(null);
   useEffect(() => { display.current?.focus(); }, []);
   const pomodoro = timer.mode === 'pomodoro';
@@ -42,7 +44,6 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
         className={`${styles.time} ${time.length > 5 ? styles.hours : ''}`}>{time}</p>
       {pomodoro && <p className={styles.progress} aria-label="サイクル内の集中回数">{currentFocus} / {timer.pomodoro!.long_break_every}</p>}
     </div>
-    {waiting && !error && !pending && <p className={styles.notice} role="status">フェーズが満了しました。次のフェーズを開始してください。</p>}
     <div className={styles.controls}>
       <button type="button" aria-label={waiting ? '次のフェーズを開始' : resume ? '再開' : '一時停止'} disabled={disabled} onClick={() => onAction(primary)}><Icon name={resume ? 'play' : 'pause'} /></button>
       {pomodoro && timer.phase !== 'focus' && <button type="button" className={styles.secondary} aria-label="休憩をスキップ" disabled={disabled} onClick={() => onAction('skip')}><Icon name="skip" /></button>}
@@ -50,7 +51,11 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
       {pending && !busy ? <button type="button" aria-label="送信結果を確認・再送" onClick={onRetry}><Icon name="retry" /></button> :
         error && <button type="button" aria-label="状態を再読み込み" title={error} disabled={busy} onClick={onRefresh}><Icon name="retry" /></button>}
     </div>
-    {error && <p role="alert" className={styles.notice}>{error}</p>}
-    {pending && !busy && !error && <p role="status" className={styles.notice}>未保存の実績があります。再送ボタンから再送できます。</p>}
+    <div className={styles.notice}>
+    {waiting && !error && !pending && <p role="status">フェーズが満了しました。次のフェーズを開始してください。</p>}
+    {pomodoro && soundWarning && <p role="status">{soundWarning} <button type="button" onClick={onEnableSound}>終了音を確認</button></p>}
+    {error && <p role="alert">{error}</p>}
+    {pending && !busy && !error && <p role="status">未保存の実績があります。再送ボタンから再送できます。</p>}
+    </div>
   </section>;
 }

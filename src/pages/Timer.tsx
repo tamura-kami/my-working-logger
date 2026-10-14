@@ -27,12 +27,18 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
   const sending = useRef(false);
   const mounted = useRef(false);
   const [, setTick] = useState(0);
-  const sound = useRef(new TimerSound());
+  const [soundReady, setSoundReady] = useState(false);
+  const sound = useRef(new TimerSound((ready) => {
+    if (!mounted.current) return;
+    setSoundReady(ready);
+    setSoundNotice(ready ? '終了音は有効です。集中・休憩の満了時に鳴ります。' : '終了音が中断されています。「終了音を確認」を押して有効にしてください。');
+  }));
   const [soundNotice, setSoundNotice] = useState('開始・再開時に終了音を有効にします。再読込後は「終了音を確認」を押してください。');
   async function enableSound(test = false) {
-    const enabled = await sound.current.enable();
-    if (test && enabled) sound.current.play();
-    setSoundNotice(enabled ? '終了音は有効です。集中・休憩の満了時に鳴ります。' : '終了音を有効にできません。ブラウザと端末の音量設定を確認してください。');
+    const enabled = await sound.current.enable(test);
+    const ready = enabled && (!test || sound.current.play());
+    setSoundReady(ready);
+    setSoundNotice(ready ? '終了音は有効です。集中・休憩の満了時に鳴ります。' : '終了音を有効にできません。ブラウザと端末の音量設定を確認してください。');
   }
   const commit = useCallback((next: LocalTimer): boolean => {
     try {
@@ -94,6 +100,7 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
     }, 250);
     const restore = () => {
       if (document.hidden) { suspended = true; return; }
+      void sound.current.restore();
       advance(false); suspended = false; lastTick = Date.now(); setTick((t) => t + 1); void flush();
     };
     const hide = () => { suspended = true; };
@@ -149,7 +156,7 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
   }, [active, onActiveChange]);
   if (active) return <ActiveTimer timer={timer!} milliseconds={primaryTime} disabled={controlsDisabled}
     busy={busy} error={storageError || error} pending={!!pending} onAction={act} onRefresh={() => void flush()}
-    onRetry={() => void flush()} />;
+    onRetry={() => void flush()} soundWarning={soundReady ? '' : soundNotice} onEnableSound={() => void enableSound(true)} />;
   return <section aria-labelledby="timer-heading">
     <h1 id="timer-heading">タイマー</h1><p>今日の作業を記録します。</p>
     {!loaded ? <p role="status">読み込み中…</p> : <>
