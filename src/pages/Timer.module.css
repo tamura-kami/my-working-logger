@@ -1,13 +1,5 @@
-.panel { background: white; border: 1px solid #dce4da; border-radius: 16px; padding: 40px 24px; text-align: center; margin-top: 28px; }
-.time { font-size: clamp(2rem, 8vw, 4rem); font-variant-numeric: tabular-nums; letter-spacing: 0.04em; margin: 12px 0 28px; color: #175c50; }
+.start { display: block; width: 100%; max-width: 480px; min-height: 52px; margin-top: 24px; font-size: 1.1rem; font-weight: 700; }
 .select { display: block; max-width: 480px; margin-top: 24px; }
-.project { border-left: 6px solid; padding: 12px 18px; background: white; }
-.status { font-weight: 700; }
-.details { display: flex; justify-content: center; gap: 32px; flex-wrap: wrap; }
-.details dd { margin: 4px 0; font-variant-numeric: tabular-nums; }
-.actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
-.note { color: #52645e; font-size: 0.9rem; }
-
 .settings { margin-top: 24px; background: white; border: 1px solid #dce4da; padding: 20px; border-radius: 12px; }
 .settings summary { cursor: pointer; min-height: 32px; }
 .settings fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; border: 0; padding: 16px 0; }

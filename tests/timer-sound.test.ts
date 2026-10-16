@@ -51,11 +51,61 @@ it('does not create audio without a user action', async () => {
   expect(FakeContext.instances).toHaveLength(0);
 });
 
-it('recreates even a running context when the user tests sound', async () => {
+it('resumes a suspended context synchronously from the user action and reuses it', async () => {
+  const { sound } = setup();
+  const enabling = sound.enable();
+  const context = FakeContext.instances[0];
+  expect(context.resume).toHaveBeenCalledTimes(1);
+  await enabling;
+  context.state = 'suspended';
+  const resuming = sound.enable();
+  expect(context.resume).toHaveBeenCalledTimes(2);
+  expect(await resuming).toBe(true);
+  expect(FakeContext.instances).toHaveLength(1);
+  expect(context.close).not.toHaveBeenCalled();
+});
+it('recreates a closed context on the next user action', async () => {
   const { sound } = setup();
   await sound.enable();
-  const original = FakeContext.instances[0];
-  expect(await sound.enable(true)).toBe(true);
-  expect(original.close).toHaveBeenCalled();
+  FakeContext.instances[0].state = 'closed';
+  expect(await sound.enable()).toBe(true);
   expect(FakeContext.instances).toHaveLength(2);
+});
+it('captures playback exceptions for diagnosis', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const { sound } = setup();
+  await sound.enable();
+  const error = new Error('audio unavailable');
+  Object.assign(FakeContext.instances[0], { createOscillator: () => { throw error; } });
+  expect(sound.play()).toBe(false);
+  expect(warn).toHaveBeenCalledWith('Timer sound playback failed', error);
+  warn.mockRestore();
+});
+
+it('reuses one context across repeated notifications and disconnects finished nodes', async () => {
+  const { sound } = setup();
+  await sound.enable();
+  const context = FakeContext.instances[0];
+  const oscillators: { onended: (() => void) | null; disconnect: ReturnType<typeof vi.fn> }[] = [];
+  const gains: { disconnect: ReturnType<typeof vi.fn> }[] = [];
+  Object.assign(context, {
+    currentTime: 0, destination: {},
+    createOscillator: () => {
+      const oscillator = { frequency: { value: 0 }, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn(), onended: null as (() => void) | null };
+      oscillators.push(oscillator); return oscillator;
+    },
+    createGain: () => {
+      const gain = { gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() }, connect: vi.fn(), disconnect: vi.fn() };
+      gains.push(gain); return gain;
+    },
+  });
+  for (let i = 0; i < 12; i++) {
+    expect(sound.play()).toBe(true);
+    oscillators.slice(-3).forEach((oscillator) => oscillator.onended?.());
+  }
+  expect(FakeContext.instances).toHaveLength(1);
+  expect(oscillators).toHaveLength(36);
+  for (const node of [...oscillators, ...gains]) expect(node.disconnect).toHaveBeenCalledTimes(1);
+  sound.close();
+  expect(context.close).toHaveBeenCalledTimes(1);
 });

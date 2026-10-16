@@ -14,8 +14,6 @@ interface Props {
   onAction: (action: Action) => void;
   onRefresh: () => void;
   onRetry: () => void;
-  soundWarning?: string;
-  onEnableSound?: () => void;
 }
 function Icon({ name }: { name: 'pause' | 'play' | 'stop' | 'skip' | 'retry' }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -26,7 +24,7 @@ function Icon({ name }: { name: 'pause' | 'play' | 'stop' | 'skip' | 'retry' }) 
       <><path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5" /></>}
   </svg>;
 }
-export default function ActiveTimer({ timer, milliseconds, disabled, busy, error, pending, onAction, onRefresh, onRetry, soundWarning, onEnableSound }: Props) {
+export default function ActiveTimer({ timer, milliseconds, disabled, busy, error, pending, onAction, onRefresh, onRetry }: Props) {
   const display = useRef<HTMLParagraphElement>(null);
   useEffect(() => { display.current?.focus(); }, []);
   const pomodoro = timer.mode === 'pomodoro';
@@ -38,7 +36,7 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
   const resume = timer.status === 'paused' || waiting;
   const primary: Action = waiting ? 'next' : resume ? 'resume' : 'pause';
   const color = !pomodoro ? '#253E49' : timer.phase === 'focus' ? '#C94F45' : '#448A70';
-  return <section className={styles.screen} style={{ backgroundColor: color }} aria-label={pomodoro ? 'ポモドーロタイマー' : '通常タイマー'} aria-busy={busy}>
+  return <section className={styles.screen} style={{ backgroundColor: color }} aria-label={pomodoro ? 'ポモドーロタイマー' : 'タイマー'} aria-busy={busy}>
     <div className={styles.display}>
       <p ref={display} tabIndex={-1} role="timer" aria-label={pomodoro ? '残り時間' : '実作業時間'}
         className={`${styles.time} ${time.length > 5 ? styles.hours : ''}`}>{time}</p>
@@ -53,7 +51,6 @@ export default function ActiveTimer({ timer, milliseconds, disabled, busy, error
     </div>
     <div className={styles.notice}>
     {waiting && !error && !pending && <p role="status">フェーズが満了しました。次のフェーズを開始してください。</p>}
-    {pomodoro && soundWarning && <p role="status">{soundWarning} <button type="button" onClick={onEnableSound}>終了音を確認</button></p>}
     {error && <p role="alert">{error}</p>}
     {pending && !busy && !error && <p role="status">未保存の実績があります。再送ボタンから再送できます。</p>}
     </div>

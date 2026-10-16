@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Timer from '../src/pages/Timer';
 import Projects from '../src/pages/Projects';
+import { TimerSound } from '../src/timerSound';
 import { timerStorageKey, startLocalTimer, emptyLocalTimer, writeLocalTimer } from '../src/localTimer';
 import type { Project } from '../shared/contracts';
 
@@ -32,6 +33,38 @@ describe('作業管理画面', () => {
 });
 
 describe('ローカルタイマー画面', () => {
+  it.each(['タイマー', 'ポモドーロ'])('%s の開始前は選択・設定・開始だけを表示し、操作中に音声を有効化する', async (mode) => {
+    const enable = vi.spyOn(TimerSound.prototype, 'enable').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => json({ projects: [project] }));
+    mountTimer();
+    await waitFor(() => expect((screen.getByRole('button', { name: '開始' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: mode }));
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(screen.queryByText('00:00:00')).toBeNull();
+    expect(screen.queryByText(/ブラウザを閉じても|終了音|スリープ/)).toBeNull();
+    expect(enable).not.toHaveBeenCalled();
+    if (mode === 'ポモドーロ') expect(screen.getByLabelText('集中（分）')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '開始' }));
+    expect(enable).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('region', { name: mode === 'ポモドーロ' ? 'ポモドーロタイマー' : mode })).toBeTruthy();
+    expect(screen.queryByText(/終了音/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '一時停止' }));
+    fireEvent.click(screen.getByRole('button', { name: '再開' }));
+    expect(enable).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('button', { name: '一時停止' })).toBeTruthy();
+  });
+  it('通常タイマーの終了時は音を鳴らさず実績を保存する', async () => {
+    const play = vi.spyOn(TimerSound.prototype, 'play').mockReturnValue(false);
+    writeLocalTimer(startLocalTimer(emptyLocalTimer(), project, 'normal', { focus_minutes: 1, short_break_minutes: 1, long_break_minutes: 1, long_break_every: 1 }, Date.now() - 10000));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/projects' ? { projects: [project] } : { saved: true }));
+    window.confirm = vi.fn(() => true);
+    mountTimer();
+    fireEvent.click(screen.getByRole('button', { name: '終了して保存' }));
+    await screen.findByText('作業実績を保存しました。');
+    expect(play).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(true);
+    expect(screen.queryByRole('timer')).toBeNull();
+  });
   it('開始・一時停止・再開は通信を待たず切替、リロードで復元', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => json({ projects: [project] }));
     const view = mountTimer();
@@ -108,6 +141,18 @@ describe('表示中の満了と復帰時の満了', () => {
     expect(screen.getByRole('timer').textContent).toBe('01:00');
     expect(screen.getByRole('button', { name: '休憩をスキップ' })).toBeTruthy();
     expect(play).toHaveBeenCalledTimes(1);
+  });
+  it('音声失敗後も複数フェーズを進め、サイクル実績を保存する', async () => {
+    const play = vi.spyOn(TimerSound.prototype, 'play').mockReturnValue(false);
+    vi.useFakeTimers(); vi.setSystemTime(1800000000000);
+    writeLocalTimer(startLocalTimer(emptyLocalTimer(), project, 'pomodoro', settings, Date.now()));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => json(String(url) === '/api/projects' ? { projects: [project] } : { saved: true }));
+    mountTimer();
+    await act(async () => { vi.advanceTimersByTime(180000); });
+    expect(play).toHaveBeenCalledTimes(3);
+    expect(screen.getByLabelText('サイクル内の集中回数').textContent).toBe('2 / 2');
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem(timerStorageKey)!).timer.phase).toBe('long_break');
   });
   it('非表示中の満了は復帰時に00:00で停止し、次を自動開始しない', async () => {
     vi.useFakeTimers(); vi.setSystemTime(1800000000000);

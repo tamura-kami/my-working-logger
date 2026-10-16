@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PomodoroSettings, Project } from '../../shared/contracts';
-import { cycleDurations, formatDuration, remainingTime } from '../../shared/timing';
+import { cycleDurations, remainingTime } from '../../shared/timing';
 import { api, errorMessage } from '../api';
 import { defaultPomodoro, validPomodoro } from '../../shared/pomodoro';
 import { loadPomodoro, savePomodoro, loadTimerMode, saveTimerMode } from '../pomodoroSettings';
@@ -27,19 +27,7 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
   const sending = useRef(false);
   const mounted = useRef(false);
   const [, setTick] = useState(0);
-  const [soundReady, setSoundReady] = useState(false);
-  const sound = useRef(new TimerSound((ready) => {
-    if (!mounted.current) return;
-    setSoundReady(ready);
-    setSoundNotice(ready ? '終了音は有効です。集中・休憩の満了時に鳴ります。' : '終了音が中断されています。「終了音を確認」を押して有効にしてください。');
-  }));
-  const [soundNotice, setSoundNotice] = useState('開始・再開時に終了音を有効にします。再読込後は「終了音を確認」を押してください。');
-  async function enableSound(test = false) {
-    const enabled = await sound.current.enable(test);
-    const ready = enabled && (!test || sound.current.play());
-    setSoundReady(ready);
-    setSoundNotice(ready ? '終了音は有効です。集中・休憩の満了時に鳴ります。' : '終了音を有効にできません。ブラウザと端末の音量設定を確認してください。');
-  }
+  const sound = useRef(new TimerSound());
   const commit = useCallback((next: LocalTimer): boolean => {
     try {
       writeLocalTimer(next); current.current = next;
@@ -125,7 +113,7 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
     if (action === 'finish' && !window.confirm(value.timer?.mode === 'pomodoro' ? 'ポモドーロを終了しますか？ここまでの集中時間をまとめて保存します。' : 'この作業を終了して実績を保存しますか？')) return;
     const now = Date.now();
     value = expireLocalTimer(value, now, false);
-    if (['start', 'resume', 'next', 'skip'].includes(action)) void enableSound();
+    if (['start', 'resume', 'next', 'skip'].includes(action)) void sound.current.enable();
     if (action === 'start') {
       const project = projects.find((p) => p.id === selected);
       if (!project || value.timer || (mode === 'pomodoro' && !validPomodoro(settings))) return;
@@ -138,7 +126,9 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
     } else if (action === 'next' || (action === 'skip' && value.timer.phase !== 'focus')) value = beginNext(value, now);
     else if (action === 'pause' && value.timer.status === 'running') value = pauseLocalTimer(value, now);
     else if (action === 'resume' && value.timer.status === 'paused') value = resumeLocalTimer(value, now);
-    if (commit(value) && value.pending.length) void flush();
+    if (commit(value)) {
+      if (value.pending.length) void flush();
+    }
   }
   const timer = state.timer;
   const now = Date.now();
@@ -156,9 +146,9 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
   }, [active, onActiveChange]);
   if (active) return <ActiveTimer timer={timer!} milliseconds={primaryTime} disabled={controlsDisabled}
     busy={busy} error={storageError || error} pending={!!pending} onAction={act} onRefresh={() => void flush()}
-    onRetry={() => void flush()} soundWarning={soundReady ? '' : soundNotice} onEnableSound={() => void enableSound(true)} />;
+    onRetry={() => void flush()} />;
   return <section aria-labelledby="timer-heading">
-    <h1 id="timer-heading">タイマー</h1><p>今日の作業を記録します。</p>
+    <h1 id="timer-heading">記録する</h1>
     {!loaded ? <p role="status">読み込み中…</p> : <>
       <label className={styles.select}>作業<select value={selected} disabled={controlsDisabled || !projects.length} onChange={(e) => chooseProject(e.target.value)}>
         {!projects.length && <option value="">作業がありません</option>}
@@ -180,14 +170,10 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
               <path d="m24 15-10-3 5 7-7 2 10 1 2 6 3-6 9-1-7-3 5-7Z" fill="#4b8d51" stroke="#39754b" strokeWidth="1.5" strokeLinejoin="round" />
               <path d="M12 28c0 4 2 7 5 9" fill="none" stroke="#ffb0a1" strokeWidth="2.5" strokeLinecap="round" />
             </svg>}
-            <span>{choice === 'normal' ? '通常タイマー' : 'ポモドーロ'}</span>
+            <span>{choice === 'normal' ? 'タイマー' : 'ポモドーロ'}</span>
           </button>)}
         </div>
       </fieldset>}
-      <div className={styles.panel}>
-        <p className={styles.time}>{formatDuration(effectiveMode === 'pomodoro' ? settings.focus_minutes * 60000 : 0)}</p>
-        <button disabled={controlsDisabled || !selected || (mode === 'pomodoro' && !validPomodoro(settings))} onClick={() => act('start')}>開始</button>
-      </div>
       {effectiveMode === 'pomodoro' && <details className={styles.settings} open={!active}>
         <summary>ポモドーロ設定{active && '（開始時の設定）'}</summary>
         <fieldset disabled={controlsDisabled || active || !selected}>
@@ -200,10 +186,8 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
         {!active && !validPomodoro(settings) && <p role="alert">時間と回数を指定範囲の整数で入力してください。</p>}
       </details>}
       {!projects.length && !active && <p><Link to="/projects">作業管理</Link>で作業を追加してください。</p>}
-      <p className={styles.note}>{effectiveMode === 'pomodoro' ? '画面を開いている間、集中と休憩が自動で切り替わります。長い休憩の直前に集中時間をまとめて保存し、短い休憩と一時停止は休止時間に含めます。復帰時に満了していた場合は00:00で停止し、操作して次へ進みます。' : 'ブラウザを閉じても計測は続きます。一時停止中はその状態で復元します。'}</p>
+      <button className={styles.start} disabled={controlsDisabled || !selected || (mode === 'pomodoro' && !validPomodoro(settings))} onClick={() => act('start')}>開始</button>
     </>}
-    <p><button onClick={() => void enableSound(true)}>終了音を確認</button> {soundNotice}</p>
-    <p className={styles.note}>画面を閉じた状態や端末のスリープ中は終了音を鳴らせません。</p>
     {storageError && <p role="alert">{storageError}</p>}
     {error && <p role="alert">{error} <button disabled={busy} onClick={() => void refresh()}>状態を再読み込み</button></p>}
     {message && <p role="status">{message}</p>}

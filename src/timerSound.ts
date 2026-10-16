@@ -9,8 +9,10 @@ export class TimerSound {
         context.resume(),
         new Promise<void>((resolve) => { timeout = setTimeout(resolve, 1500); }),
       ]);
-      return context === this.context && context.state === 'running';
-    } catch { return false; }
+      const ready = context === this.context && context.state === 'running';
+      if (!ready) console.warn('Timer sound resume incomplete', { state: context.state });
+      return ready;
+    } catch (error) { console.warn('Timer sound resume failed', error); return false; }
     finally { clearTimeout(timeout); }
   }
   // 復帰時は既に有効化された音声だけを再開する。
@@ -20,12 +22,12 @@ export class TimerSound {
     if (context === this.context) this.onStateChange?.(ready);
     return ready;
   }
-  async enable(recreate = false): Promise<boolean> {
+  async enable(): Promise<boolean> {
     try {
       const Constructor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Constructor) return false;
       // iPad で中断後に復帰不能になった context は、利用者の操作中に作り直す。
-      if (this.context && (recreate || this.context.state !== 'running')) this.close();
+      if (this.context && (this.context.state === 'closed' || (this.context.state as string) === 'interrupted')) this.close();
       if (!this.context) {
         const context = new Constructor();
         this.context = context;
@@ -34,11 +36,14 @@ export class TimerSound {
         };
       }
       return await this.restore();
-    } catch { this.onStateChange?.(false); return false; }
+    } catch (error) { console.warn('Timer sound initialization failed', error); this.onStateChange?.(false); return false; }
   }
   play(): boolean {
     const context = this.context;
-    if (!context || context.state !== 'running') { this.onStateChange?.(false); return false; }
+    if (!context || context.state !== 'running') {
+      console.warn('Timer sound playback unavailable', { state: context?.state ?? 'uninitialized' });
+      this.onStateChange?.(false); return false;
+    }
     try {
       for (let i = 0; i < 3; i++) {
         const oscillator = context.createOscillator();
@@ -53,7 +58,7 @@ export class TimerSound {
         oscillator.start(at); oscillator.stop(at + 0.24);
       }
       return true;
-    } catch { this.onStateChange?.(false); return false; }
+    } catch (error) { console.warn('Timer sound playback failed', error); this.onStateChange?.(false); return false; }
   }
   close() {
     const context = this.context; this.context = null;
