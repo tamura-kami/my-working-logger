@@ -1,4 +1,24 @@
-.list { list-style: none; padding: 0; }
-.session { background: white; padding: 18px 24px; border-left: 6px solid; border-radius: 8px; margin: 18px 0; }
-.session h2 { font-size: 1.1rem; margin: 0; }
-.session p { margin: 8px 0; }
+.toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.toolbar h2 { margin: 0; flex: 1; }
+.totals { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; padding: 24px; background: #e4f2ed; border-radius: 12px; }
+.totals strong { font-size: 1.5rem; }
+.scroll { height: 65vh; min-height: 320px; overflow: auto; background: white; border: 1px solid #dce5df; border-radius: 10px; padding: 20px 12px 28px; }
+.timeline { height: 2304px; position: relative; margin-left: 56px; }
+.hour { position: absolute; width: 100%; border-top: 1px dashed #dce5df; pointer-events: none; }
+.hour > span { position: absolute; right: calc(100% + 10px); top: -13px; color: #61756e; font-size: 0.8rem; }
+.track { position: absolute; inset: 0 0 0 4px; }
+.block { position: absolute; min-height: 0; padding: 0; border: 1px solid; border-left-width: 6px; border-radius: 5px; color: #142d27; text-align: left; overflow: hidden; }
+.block:hover { filter: brightness(0.96); }
+.block:focus-visible { z-index: 2; }
+.blockText { display: flex; flex-direction: column; padding: 3px 8px; font-size: 0.8rem; line-height: 1.25; }
+.pause { position: absolute; bottom: 0; left: 0; right: 0; height: 22px; background: #fff0af; color: #59480b; font-size: 0.75rem; padding: 0 8px; white-space: nowrap; }
+.list { padding-left: 0; list-style: none; }
+.list li { margin: 8px 0; }
+.list button { text-align: left; background: white; color: #175c50; width: 100%; }
+.dialog { width: min(520px, calc(100% - 24px)); max-height: 90vh; overflow: auto; border: 1px solid #cedbd5; border-radius: 12px; padding: 24px; color: #233c36; }
+.dialog::backdrop { background: #142d2766; }
+.dialog label { margin: 16px 0; }
+.actions { display: flex; gap: 12px; margin-top: 20px; }
+.actions button { flex: 1; }
+.danger { background: white; color: #b32a2a; border-color: #b32a2a; }
+.warning { background: #fff3d8; padding: 16px; border-radius: 8px; color: #75440c; }

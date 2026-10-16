@@ -47,3 +47,45 @@ it('DBバッチ失敗時は実績・受領記録を両方ロールバックし�
   } finally { await env.DB.prepare('DROP TRIGGER fail_receipt').run(); }
   expect((await post(record)).status).toBe(200);
 });
+
+const change = (id: string, value?: unknown) => app.request(`/api/sessions/${id}`, {
+  method: value === undefined ? 'DELETE' : 'PATCH', headers: { 'Content-Type': 'application/json' },
+  ...(value === undefined ? {} : { body: JSON.stringify(value) }),
+}, env);
+it('編集で実作業を再計算し、重複も許可、削除後は再送しても復活しない', async () => {
+  const record = input(); await post(record);
+  const edit = { started_at: record.started_at, ended_at: 130000, paused_ms: 5000 };
+  expect((await change(record.id, edit)).status).toBe(200);
+  expect(await env.DB.prepare('SELECT active_seconds FROM work_sessions WHERE id = ?').bind(record.id).first()).toEqual({ active_seconds: 25 });
+  for (const value of [{ ...edit, ended_at: edit.started_at }, { ...edit, paused_ms: -1 }, { ...edit, paused_ms: 30000 }, { ...edit, paused_ms: 29001 }]) {
+    expect((await change(record.id, value)).status).toBe(400);
+  }
+  await post(record);
+  expect(await env.DB.prepare('SELECT active_seconds FROM work_sessions WHERE id = ?').bind(record.id).first()).toEqual({ active_seconds: 25 });
+  expect((await change(record.id)).status).toBe(200);
+  await post(record);
+  expect(await env.DB.prepare('SELECT id FROM work_sessions WHERE id = ?').bind(record.id).first()).toBeNull();
+  expect((await change(record.id, edit)).status).toBe(404);
+  expect((await change(record.id)).status).toBe(404);
+});
+it('日本時間の当日と交差する全件を取得し、日跨ぎと100件超を保持する', async () => {
+  const start = Date.parse('2026-10-16T00:00:00+09:00');
+  const records = Array.from({ length: 102 }, (_, i) => ({ ...input(), started_at: start + i * 1000, ended_at: start + i * 1000 + 10000 }));
+  records.push({ ...input(), started_at: start + 86399000, ended_at: start + 90000000 });
+  records.push({ ...input(), started_at: start - 1000, ended_at: start + 10000 });
+  for (const record of records) await post(record);
+  const response = await app.request('/api/sessions?date=2026-10-16', {}, env);
+  const data = await response.json() as { sessions: { id: string }[] };
+  expect(data.sessions).toHaveLength(104);
+  expect(data.sessions.map((s) => s.id)).toContain(records[102].id);
+  expect(data.sessions.map((s) => s.id)).toContain(records[103].id);
+  const next = await app.request('/api/sessions?date=2026-10-17', {}, env);
+  expect(((await next.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual([records[102].id]);
+  const boundary = { ...input(), started_at: start - 10000, ended_at: start, paused_ms: 0 };
+  await post(boundary);
+  const again = await app.request('/api/sessions?date=2026-10-16', {}, env);
+  expect(((await again.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).not.toContain(boundary.id);
+  const overlap = await app.request(`/api/sessions?overlap_start=${start}&overlap_end=${start + 1000}`, {}, env);
+  expect(((await overlap.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toContain(records[103].id);
+  for (const query of ['date=2026-02-30', 'date=bad', 'overlap_start=2&overlap_end=1']) expect((await app.request(`/api/sessions?${query}`, {}, env)).status).toBe(400);
+});
