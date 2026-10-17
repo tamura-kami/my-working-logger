@@ -174,7 +174,7 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
           </button>)}
         </div>
       </fieldset>}
-      {effectiveMode === 'pomodoro' && <details className={styles.settings} open={!active}>
+      {effectiveMode === 'pomodoro' && <details className={styles.settings}>
         <summary>ポモドーロ設定{active && '（開始時の設定）'}</summary>
         <fieldset disabled={controlsDisabled || active || !selected}>
           <legend>作業別の設定</legend>
