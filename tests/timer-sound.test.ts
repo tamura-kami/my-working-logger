@@ -51,18 +51,33 @@ it('does not create audio without a user action', async () => {
   expect(FakeContext.instances).toHaveLength(0);
 });
 
-it('resumes a suspended context synchronously from the user action and reuses it', async () => {
+it.each(['running', 'suspended', 'interrupted'])('recreates a %s context and starts resume synchronously', async (state) => {
   const { sound } = setup();
+  await sound.enable();
+  const original = FakeContext.instances[0];
+  original.state = state;
   const enabling = sound.enable();
-  const context = FakeContext.instances[0];
-  expect(context.resume).toHaveBeenCalledTimes(1);
-  await enabling;
-  context.state = 'suspended';
-  const resuming = sound.enable();
-  expect(context.resume).toHaveBeenCalledTimes(2);
-  expect(await resuming).toBe(true);
-  expect(FakeContext.instances).toHaveLength(1);
-  expect(context.close).not.toHaveBeenCalled();
+  const replacement = FakeContext.instances[1];
+  expect(original.close).toHaveBeenCalledTimes(1);
+  expect(original.onstatechange).toBeNull();
+  expect(replacement.resume).toHaveBeenCalledTimes(1);
+  expect(await enabling).toBe(true);
+  sound.close();
+});
+it('ignores a stale resume completing after a newer user action', async () => {
+  const { sound, changed } = setup();
+  await sound.enable();
+  const original = FakeContext.instances[0];
+  original.state = 'suspended';
+  let complete!: () => void;
+  original.resume.mockImplementation(() => new Promise<void>((resolve) => { complete = resolve; }));
+  const stale = sound.restore();
+  expect(await sound.enable()).toBe(true);
+  changed.mockClear();
+  original.state = 'running'; complete();
+  expect(await stale).toBe(false);
+  expect(changed).not.toHaveBeenCalled();
+  sound.close();
 });
 it('recreates a closed context on the next user action', async () => {
   const { sound } = setup();

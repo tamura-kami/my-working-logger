@@ -113,7 +113,6 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
     if (action === 'finish' && !window.confirm(value.timer?.mode === 'pomodoro' ? 'ポモドーロを終了しますか？ここまでの集中時間をまとめて保存します。' : 'この作業を終了して実績を保存しますか？')) return;
     const now = Date.now();
     value = expireLocalTimer(value, now, false);
-    if (['start', 'resume', 'next', 'skip'].includes(action)) void sound.current.enable();
     if (action === 'start') {
       const project = projects.find((p) => p.id === selected);
       if (!project || value.timer || (mode === 'pomodoro' && !validPomodoro(settings))) return;
@@ -126,7 +125,10 @@ export default function Timer({ onActiveChange }: { onActiveChange?: (active: bo
     } else if (action === 'next' || (action === 'skip' && value.timer.phase !== 'focus')) value = beginNext(value, now);
     else if (action === 'pause' && value.timer.status === 'running') value = pauseLocalTimer(value, now);
     else if (action === 'resume' && value.timer.status === 'paused') value = resumeLocalTimer(value, now);
+    // await を挟まず、クリック内で新規 Context の生成・resume を開始する。
+    if (action !== 'finish' && value.timer?.mode === 'pomodoro') void sound.current.enable();
     if (commit(value)) {
+      if (action === 'finish') sound.current.close();
       if (value.pending.length) void flush();
     }
   }

@@ -24,17 +24,15 @@ export class TimerSound {
   }
   async enable(): Promise<boolean> {
     try {
+      // running と報告されても無音になる Safari の状態を引き継がない。
+      this.close();
       const Constructor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!Constructor) return false;
-      // iPad で中断後に復帰不能になった context は、利用者の操作中に作り直す。
-      if (this.context && (this.context.state === 'closed' || (this.context.state as string) === 'interrupted')) this.close();
-      if (!this.context) {
-        const context = new Constructor();
-        this.context = context;
-        context.onstatechange = () => {
-          if (this.context === context) this.onStateChange?.(context.state === 'running');
-        };
-      }
+      if (!Constructor) throw new Error('Web Audio API unavailable');
+      const context = new Constructor();
+      this.context = context;
+      context.onstatechange = () => {
+        if (this.context === context) this.onStateChange?.(context.state === 'running');
+      };
       return await this.restore();
     } catch (error) { console.warn('Timer sound initialization failed', error); this.onStateChange?.(false); return false; }
   }
@@ -62,6 +60,10 @@ export class TimerSound {
   }
   close() {
     const context = this.context; this.context = null;
-    if (context) { context.onstatechange = null; void context.close().catch(() => {}); }
+    if (context) {
+      context.onstatechange = null;
+      try { void context.close().catch((error) => console.warn('Timer sound close failed', error)); }
+      catch (error) { console.warn('Timer sound close failed', error); }
+    }
   }
 }

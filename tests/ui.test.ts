@@ -45,13 +45,26 @@ describe('ローカルタイマー画面', () => {
     expect(enable).not.toHaveBeenCalled();
     if (mode === 'ポモドーロ') expect(screen.getByLabelText('集中（分）')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '開始' }));
-    expect(enable).toHaveBeenCalledTimes(1);
+    expect(enable).toHaveBeenCalledTimes(mode === 'ポモドーロ' ? 1 : 0);
     expect(screen.getByRole('region', { name: mode === 'ポモドーロ' ? 'ポモドーロタイマー' : mode })).toBeTruthy();
     expect(screen.queryByText(/終了音/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '一時停止' }));
     fireEvent.click(screen.getByRole('button', { name: '再開' }));
-    expect(enable).toHaveBeenCalledTimes(2);
+    expect(enable).toHaveBeenCalledTimes(mode === 'ポモドーロ' ? 3 : 0);
     expect(screen.getByRole('button', { name: '一時停止' })).toBeTruthy();
+  });
+  it('自動満了では音声を再生成せず、休憩スキップでは再生成する', async () => {
+    vi.useFakeTimers();
+    const enable = vi.spyOn(TimerSound.prototype, 'enable').mockResolvedValue(true);
+    const play = vi.spyOn(TimerSound.prototype, 'play').mockReturnValue(true);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => json({ projects: [project] }));
+    writeLocalTimer(startLocalTimer(emptyLocalTimer(), project, 'pomodoro', { focus_minutes: 1, short_break_minutes: 1, long_break_minutes: 1, long_break_every: 2 }, Date.now()));
+    mountTimer();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(enable).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '休憩をスキップ' }));
+    expect(enable).toHaveBeenCalledTimes(1);
   });
   it('通常タイマーの終了時は音を鳴らさず実績を保存する', async () => {
     const play = vi.spyOn(TimerSound.prototype, 'play').mockReturnValue(false);
